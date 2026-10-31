@@ -1,0 +1,5 @@
+{
+  "main": "build/all-bundle.cjs",
+  "output": "build/all-blob.bin",
+  "disableExperimentalSEAWarning": true
+}

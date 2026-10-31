@@ -1,0 +1,22 @@
+{
+  "_说明": "错误反馈的 SMTP 配置。填好本文件后，用户点「反馈问题」或程序崩溃时才会真正发邮件。",
+  "_放哪里": [
+    "A) 和 下载器.exe 同目录（推荐，打包时一起放进发布包）",
+    "B) %APPDATA%\\UnifiedDownloader\\report-config.json（每台机器单独配）"
+  ],
+  "_注意": [
+    "pass 不是邮箱登录密码，是 SMTP 授权码",
+    "163 邮箱：设置 → POP3/SMTP/IMAP → 开启 SMTP → 获取授权码",
+    "QQ 邮箱：设置 → 账户 → 开启 SMTP → 获取授权码",
+    "这个文件含授权码，别提交到公开仓库"
+  ],
+
+  "host": "smtp.163.com",
+  "port": 465,
+  "secure": true,
+
+  "user": "填你的发件邮箱@163.com",
+  "pass": "填SMTP授权码",
+
+  "to": "sjsjdj173@163.com"
+}

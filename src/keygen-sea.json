@@ -1,0 +1,5 @@
+{
+  "main": "build/keygen-bundle.cjs",
+  "output": "build/keygen-blob.bin",
+  "disableExperimentalSEAWarning": true
+}

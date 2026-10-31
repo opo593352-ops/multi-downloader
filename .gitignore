@@ -1,0 +1,106 @@
+# ══════════════════════════════════════════════════════════
+# 统一下载器 · Git 忽略规则（v1.2.0 开源版）
+#
+# 原则：源码全开源，只排除三类东西
+#   1. 凭据         —— 邮箱授权码这种，泄露了真会出事
+#   2. 二进制依赖   —— 106MB，GitHub 单文件红线
+#   3. 构建/运行时  —— 每次构建都会重新生成
+#
+# 版本历史、卡密代码、密钥材料都**照常进仓库**（v1.2.0 已 FREE_EDITION）
+# ══════════════════════════════════════════════════════════
+
+# ── 1. 凭据（唯一真正的红线）──
+#
+# report-config.json 含明文 163 SMTP 授权码。
+# 进 GitHub 会被爬虫秒级扫到 → 邮箱被拿去发垃圾邮件 → 封号。
+# 样板见 docs/report-config.sample.json。
+report-config.json
+**/report-config.json
+!docs/report-config.sample.json
+
+# 本地激活状态（用户机器上的，不该进仓库）
+license.txt
+used-cards.txt
+clock.dat
+machine.txt
+.eula-agreed
+**/.eula-agreed
+
+# ── 2. 二进制依赖（106 MB，不进仓库）──
+#
+# ffmpeg.exe (84MB) + yt-dlp.exe (22MB)
+#   · GitHub 单文件 100MB 硬红线
+#   · 每次升级要重提交 106MB，历史迅速膨胀
+#
+# 新克隆的人跑一次：
+#     node tools/取依赖.mjs
+ffmpeg.exe
+yt-dlp.exe
+_dl_*.zip
+_unzip_tmp/
+
+# ── 3. 构建产物与中间态 ──
+*.exe
+*.pdb
+*.dll
+*.blob.bin
+*-bundle*.cjs
+src/build/
+src/gui/_version.gen.cs
+src/gui/DouyinUI*.exe
+发布/
+obj/
+bin/
+node_modules/
+src/node_modules/
+
+# ── 4. 运行时数据 ──
+downloads/
+src/downloads/
+logs/
+src/logs/
+config/
+*.log
+
+# ── 4.5 已废弃的收费路线产物 ──
+#
+# v1.2.0 转 MIT 开源 + 打赏模式，这些内容属于旧商业方案，
+# 留在仓库里会和「免费开源」定位直接冲突：
+#   宣传图/7-价格.png   日卡3.9/年卡99/长期149 的价目表
+#   收费发布清单.md     内部商业风险分析（"你要靠这个赚钱"）
+商业/
+宣传图/
+docs/收费发布清单.md
+
+# ── 5. 归档 / 临时 / 草稿 ──
+_归档/
+_tmp_*.mjs
+_t_*.mjs
+_t_*.py
+_*.py
+_tmp/
+tmp/
+gh-release/
+
+# ── 6. 系统 ──
+Thumbs.db
+desktop.ini
+.DS_Store
+*.swp
+
+# ── 7. 编辑器 ──
+.vscode/
+.idea/
+*.sublime-*
+
+# ══════════════════════════════════════════════════════════
+# 以下文件**必须**进仓库（写在这里防误排除）
+# ══════════════════════════════════════════════════════════
+#   src/dev/secret.mjs    ← 已公开废弃，保留供 fork 参考
+#   src/dev/license.mjs   ← 卡密逻辑完整保留（FREE_EDITION 不拦截）
+#   src/dev/keygen.mjs    ← 发卡工具，全开源后可公开
+#   src/gui/donate.png    ← 打赏收款码
+#   src/gui/Program.cs
+#   src/engines/*.mjs
+#   docs/*.md
+#   tools/取依赖.mjs

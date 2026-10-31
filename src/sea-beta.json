@@ -1,0 +1,5 @@
+{
+  "main": "build/beta-bundle.cjs",
+  "output": "build/beta-blob.bin",
+  "disableExperimentalSEAWarning": true
+}

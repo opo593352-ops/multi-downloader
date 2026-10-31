@@ -1,5 +1,10 @@
 # 统一下载器
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-lightgrey.svg)](#)
+[![Version](https://img.shields.io/badge/version-v1.2.0-brightgreen.svg)](../../releases)
+[![Free](https://img.shields.io/badge/price-free-%23e91e63.svg)](#支持作者)
+
 一个纯离线的 Windows 下载工具。九个功能，一个 exe，不需要装 Python、不需要装 Node、不需要登录。
 
 > **完全免费开源，没有任何功能限制。** 如果它帮到了你，可以[请作者喝杯咖啡](#支持作者)，不打赏也完全不影响使用。
@@ -132,7 +137,19 @@ v1.1.0 及更早的版本有卡密激活系统。**v1.2.0 起已完全移除限�
 
 ## 许可
 
-[MIT](LICENSE)
+本项目代码以 [MIT](LICENSE) 发布。
+
+### 第三方组件
+
+| 组件 | 许可 | 说明 |
+|---|---|---|
+| [ffmpeg](https://ffmpeg.org/) | **GPLv3** | 发布包内置的是 `essentials_build`，属 GPL 构建。按 GPL 要求，源码见 [ffmpeg.org/releases](https://ffmpeg.org/releases/) |
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | Unlicense | 站点视频解析引擎 |
+| [esbuild](https://esbuild.github.io/) | MIT | 打包 |
+| [postject](https://github.com/nodejs/postject) | MIT | SEA 注入 |
+
+> 如果 fork 后要对外分发，内置的 ffmpeg 需遵守 GPLv3 的源码提供义务。
+> 也可以选择不内置，让用户从 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 自取。
 
 ---
 

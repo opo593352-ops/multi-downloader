@@ -20,6 +20,30 @@
  *   node novel-dl.mjs <书籍URL> --from 10 --to 20
  *   node novel-dl.mjs <书籍URL> --list          只列章节，不下载
  *   node novel-dl.mjs <书籍URL> --delay 800     每章间隔（默认 600ms）
+ *
+ * ═══════════════════════════════════════════════════════════════
+ * 支持的站点（2026-11-01 实测）
+ * ═══════════════════════════════════════════════════════════════
+ *
+ * biquge365.net   全免费，章节多，无反爬。主力站点。
+ *                 书籍 /book/{id}/  目录 /newbook/{id}/  章节 /chapter/{id}/{cid}.html
+ *
+ * 17k.com         大站，无反爬，但**只有前几章免费**。
+ *                 书籍 /book/{id}.html  目录 /list/{id}.html  章节 /chapter/{id}/{cid}.html
+ *                 VIP 章节页面里写「VIP章节, 余下还有 N 个段落」，正文容器不存在。
+ *                 程序会把这类章标记成 ⊘ 付费章节 并跳过，
+ *                 最后统一提示「这 N 章是付费章节，不是程序问题」。
+ *
+ * ── 探测过但放弃的 ──
+ *
+ * b520.cc         href 全写死成 "/"，真实链接靠 JS 后填；
+ *                 且响应经常超 30 秒，服务器本身就慢。投入产出比太低。
+ * xbiquge.la      HTTPS 证书过期
+ * biquku.la       HTTPS 证书过期
+ * biqu5200.net    证书根不受信
+ * biqugse.com     连接超时
+ * beqege.cc       403
+ * fanqienovel     301 跳转 + 字体混淆(686 PUA) + a_bogus + msToken，约 7 天工作量
  */
 
 import fs from 'node:fs';
@@ -42,7 +66,47 @@ const warn = (...a) => console.error('[warn]', ...a);
 // ───────────────────── 站点适配 ─────────────────────
 /**
  * 站点配置。新增站点只需要在这里加一条。
- * 目前只验证了 biquge365，其它镜像站结构类似，可按需扩展。
+ *
+ * ═══════════════════════════════════════════════════════════════
+ * 字段约定（v1.3.0 扩展后）
+ * ═══════════════════════════════════════════════════════════════
+ *
+ * name          显示名
+ * hosts         域名匹配（endsWith 也算）
+ *
+ * ── 路径规则（两种写法，任选）──
+ *
+ *   写法 A：固定模板（原有，够用时优先）
+ *     bookIdFrom    /\/(?:book|newbook)\/(\d+)\/?/
+ *     catalog       (id) => url
+ *     chapterHref   /^\/chapter\/(\d+)\/(\d+)\.html$/
+ *
+ *   写法 B：目录页里直接带完整链接（17k 这种）
+ *     catalog       (id) => url
+ *     chapterHref   /^\/chapter\/(\d+)\/(\d+)\.html$/
+ *     bookIdFrom    同上
+ *     → 只要 chapterHref 能匹配上目录页里的绝对路径，写法 A/B 是一样的。
+ *
+ * ── 解析规则 ──
+ *
+ *   contentSelector  正文容器的正则（必须带一个捕获组）
+ *   titleSelector    标题正则（带一个捕获组）
+ *   pSplit           true = 正文按 <p> 分段（17k 是 <div class="p">）
+ *
+ * ── 已验证的站点（2026-11-01 实测，均无反爬）──
+ *
+ *   biquge365.net  纯 HTML，无字体混淆
+ *   17k.com        纯 HTML，1143 章目录一次拿全，正文在 #readArea .p
+ *
+ * ── 探测过但放弃的 ──
+ *
+ *   b520.cc        href 全写死成 "/"，真实链接靠 JS 后填；且响应常超 30 秒
+ *   xbiquge.la     HTTPS 证书过期
+ *   biquku.la      HTTPS 证书过期
+ *   biqu5200.net   证书根不受信
+ *   biqugse.com    连接超时
+ *   beqege.cc      403
+ *   fanqienovel    301 跳转，且字体混淆 + a_bogus + msToken（约 7 天工作量）
  */
 const SITES = [
   {
@@ -53,6 +117,23 @@ const SITES = [
     chapterHref: /^\/chapter\/(\d+)\/(\d+)\.html$/,
     contentSelector: /<div[^>]*id="txt"[^>]*>([\s\S]*?)<\/div>/i,
     titleSelector: /<h1[^>]*>([\s\S]*?)<\/h1>/i,
+  },
+  {
+    // 17k：目录页 /list/{bookId}.html，章节 /chapter/{bookId}/{cid}.html
+    // 正文在 <div id="readArea">，段落是 <div class="p">，不是 <p>
+    name: '17k',
+    hosts: ['17k.com', 'www.17k.com'],
+    bookIdFrom: /\/(?:book|list)\/(\d+)\.html/,
+    catalog: (id) => `https://www.17k.com/list/${id}.html`,
+    chapterHref: /^\/chapter\/(\d+)\/(\d+)\.html$/,
+    contentSelector: /<div[^>]*class="readArea"[\s\S]*?<div[^>]*class="p"[^>]*>([\s\S]*?)<\/div>/i,
+    titleSelector: /<h1[^>]*>([\s\S]*?)<\/h1>/i,
+    // 17k 的段落是 div.p，parseChapter 要按这个切
+    paraSplit: /<div[^>]*class="p"[^>]*>([\s\S]*?)<\/div>/gi,
+    // 章节页需要 Referer，否则可能 403
+    needReferer: true,
+    // 目录页里的链接是绝对路径 /chapter/xxx/yyy.html
+    catalogAbsolute: true,
   },
 ];
 
@@ -166,8 +247,11 @@ function curlGet(url, referer, timeoutMs) {
   });
 }
 
-async function fetchText(url, { retries = 4, timeout = 45000 } = {}) {
-  const origin = (() => { try { return new URL(url).origin + '/'; } catch { return undefined; } })();
+async function fetchText(url, { referer, retries = 4, timeout = 45000 } = {}) {
+  // 默认拿站点根作 Referer。17k 这类站点对无 Referer 的章节页会 403，
+  // 但给根域就够（不用给具体目录页 URL）。
+  const origin = referer
+    || (() => { try { return new URL(url).origin + '/'; } catch { return undefined; } })();
   let lastErr;
 
   for (let i = 0; i <= retries; i++) {
@@ -244,10 +328,42 @@ function parseChapter(site, html) {
   const titleM = html.match(site.titleSelector);
   const title = titleM ? clean(titleM[1].replace(/<[^>]+>/g, '')) : '';
 
-  const contentM = html.match(site.contentSelector);
-  if (!contentM) return { title, text: '', ok: false };
+  let raw;
 
-  let raw = contentM[1];
+  // ── 17k 这类：段落是 <div class="p">，不是 <p> ──
+  //    先把每个 div.p 抽出来，单独拼成行，再走通用清洗。
+  if (site.paraSplit) {
+    const paras = [];
+    const re = new RegExp(site.paraSplit.source, site.paraSplit.flags);
+    let m;
+    while ((m = re.exec(html)) !== null) {
+      const t = m[1]
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<[^>]+>/g, '')
+        .trim();
+      if (t) paras.push(t);
+    }
+
+    if (!paras.length) {
+      // ⚠ 17k 的 VIP 章节不返回正文容器（实测第 7 章起）。
+      //   页面里会写「VIP章节, 余下还有 N 个段落」。
+      //   必须和「站点改版」区分开，否则用户以为程序坏了。
+      if (/VIP章节|VIP.{0,10}章节|余下还有\s*\d+\s*个段落/.test(html)) {
+        return { title, text: '', ok: false, reason: 'vip' };
+      }
+      return { title, text: '', ok: false, reason: 'empty' };
+    }
+    raw = paras.join('\n');
+  } else {
+    const contentM = html.match(site.contentSelector);
+    if (!contentM) {
+      if (/VIP章节|付费|购买后阅读|订阅本章/.test(html)) {
+        return { title, text: '', ok: false, reason: 'vip' };
+      }
+      return { title, text: '', ok: false, reason: 'empty' };
+    }
+    raw = contentM[1];
+  }
 
   // 去掉 <script>/<style>
   raw = raw.replace(/<script[\s\S]*?<\/script>/gi, '');
@@ -256,6 +372,7 @@ function parseChapter(site, html) {
   // <br> → 换行
   raw = raw.replace(/<br\s*\/?>/gi, '\n');
   raw = raw.replace(/<\/p>/gi, '\n');
+  raw = raw.replace(/<\/div>/gi, '\n');
 
   // 去所有标签
   raw = raw.replace(/<[^>]+>/g, '');
@@ -283,6 +400,9 @@ function parseChapter(site, html) {
     if (/一秒记住|更新快|无弹窗|笔趣阁|biquge/i.test(line) && line.length < 60) continue;
     if (/^第\d+\/\d+页$/.test(line)) continue;
     if (/手机版|电脑版|请收藏|最新章节/.test(line) && line.length < 40) continue;
+    // 17k 类站点的尾部署名（实测出现在正文末尾）
+    if (/本书首发来自|17K小说网|请记住本站|首发地址|最快更新/.test(line) && line.length < 60) continue;
+    if (/^作者寄语[:：]?\s*$/.test(line)) continue;
 
     // 去掉开头混进来的章节标题行（(第x/y页) 残留）
     line = line.replace(/\(第\d+\/\d+页\)/g, '').trim();
@@ -365,6 +485,10 @@ async function downloadBook(bookUrl, opts) {
   log('');
 
   let ok = 0, fail = 0, consecutiveFail = 0;
+  // VIP 章节单独计数：站点不给正文，不是我们的 bug，
+  // 但必须让用户知道少了哪些，否则他以为下完了。
+  let vip = 0;
+  const vipChapters = [];
   const files = [];
   const mergedParts = [];
 
@@ -376,6 +500,16 @@ async function downloadBook(bookUrl, opts) {
       const parsed = parseChapter(site, html);
 
       if (!parsed.ok) {
+        // VIP 章节不是失败，是站点不给。单独计数，不要触发「限流暂停」，
+        // 也不要说「正文为空」——那句话会让用户以为程序坏了。
+        if (parsed.reason === 'vip') {
+          vip++;
+          vipChapters.push(c.index);
+          warn(`${tag}  ⊘ 付费章节，跳过`);
+          consecutiveFail = 0;      // VIP 不算连续失败
+          continue;
+        }
+
         fail++;
         consecutiveFail++;
         warn(`${tag}  ✗ 正文为空`);
@@ -424,7 +558,16 @@ async function downloadBook(bookUrl, opts) {
     files.push(mergedPath);
   }
 
-  return { chapters: picked.length, ok, fail, files, bookDir, bookTitle };
+  // VIP 章提示（有就单独说一段，别混在失败里）
+  if (vip > 0) {
+    const preview = vipChapters.slice(0, 10).join(', ');
+    const more = vipChapters.length > 10 ? ` …共 ${vipChapters.length} 章` : '';
+    warn(`\n⚠ 有 ${vip} 章是付费章节，站点不提供正文（第 ${preview}${more} 章）`);
+    warn('  这不是程序问题：17K 的 VIP 章节需要订阅才能看。');
+    warn('  免费章节已全部下载。');
+  }
+
+  return { chapters: picked.length, ok, fail, vip, files, bookDir, bookTitle };
 }
 
 /** 目录页一般倒序，按标题里的章节号排正序 */

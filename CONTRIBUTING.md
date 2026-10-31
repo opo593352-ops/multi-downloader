@@ -39,9 +39,10 @@ src/
 │   ├── zhihu-md.mjs     知乎（含专栏批量）
 │   ├── wechat-md.mjs    公众号（纯 HTTP）
 │   ├── playlist.mjs     歌单批量
-│   ├── novel-dl.mjs     小说
+│   ├── novel-dl.mjs     小说（多站点配置表）
 │   ├── stock.mjs        免版权素材
 │   ├── kuaishou-dl.mjs  快手
+│   ├── pan-dl.mjs       网盘直链解析
 │   └── doc-export.mjs   md→txt/docx
 ├── dev/
 │   ├── gate.mjs         功能闸门（FREE_EDITION 总开关）

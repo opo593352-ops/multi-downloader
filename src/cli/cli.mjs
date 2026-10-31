@@ -40,6 +40,7 @@ import * as modWechat from '../engines/wechat-md.mjs';
 import * as modPlaylist from '../engines/playlist.mjs';
 import * as modStock from '../engines/stock.mjs';
 import * as modKuaishou from '../engines/kuaishou-dl.mjs';
+import * as modPan from '../engines/pan-dl.mjs';
 import { gateStatus, internalResource } from '../dev/gate.mjs';
 import { BUILD_INTERNAL } from '../dev/buildflag.mjs';
 
@@ -170,6 +171,18 @@ const COMMANDS = {
     examples: [
       '下载器.exe kuaishou "<链接>" --headful --profile',
       '下载器.exe kuaishou "<链接>" --profile',
+    ],
+  },
+  pan: {
+    title: '网盘直链解析下载',
+    args: '<分享链接> [...] [--list] [--headful] [--net <id>] [-o 目录]',
+    mod: modPan,
+    module: './pan-dl.mjs',
+    examples: [
+      '下载器.exe pan "https://www.lanzoui.com/iXXXXXX"',
+      '下载器.exe pan "<链接>" --list          只看文件列表，不下载',
+      '下载器.exe pan "<链接>" --headful       打开浏览器，登录后解析',
+      '下载器.exe pan "<链接>" -o D:\\网盘',
     ],
   },
 };

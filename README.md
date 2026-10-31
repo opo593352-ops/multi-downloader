@@ -30,13 +30,40 @@
 
 ## 快速开始
 
-### 方式一：下载发布包（推荐）
+> ### 📢 三个告示，先看这里
+>
+> **告示一 · 不会用源码？直接下编译好的 exe，不要 clone。**
+>
+> 本仓库是给开发者看的源码。普通用户不需要 Node.js、不需要命令行，
+> 直接下载打包好的 zip，解压双击 `下载器UI.exe` 就能用。
+>
+> **告示二 · 国内用户请走 Gitee 镜像，别在这里硬等。**
+>
+> GitHub 的 Release 附件在国内经常下载失败或龟速（实测 40~60 KB/s）。
+> **国内直连推荐**：[⬇ Gitee 镜像下载](https://gitee.com/lob0904/duogongnengduopingtaixiazaiqi/releases)
+> —— 同一份包，国内 CDN，秒开。
+>
+> **告示三 · 两个地方内容完全一样，随便挑一个。**
+>
+> | 平台 | 用途 | 适合谁 |
+> |---|---|---|
+> | [GitHub](https://github.com/opo593352-ops/multi-downloader) | 主仓库、提 Issue、PR | 海外用户 / 开发者 |
+> | [Gitee](https://gitee.com/lob0904/duogongnengduopingtaixiazaiqi) | **下载二进制包** | **国内用户（推荐）** |
+>
+> 源码是同一份，同步推送，功能完全一致。
 
-去 [Releases](../../releases) 下载最新 zip，解压双击 `下载器UI.exe`。
+### 方式一：下载发布包（推荐，普通用户看这里）
+
+| 平台 | 地址 | 说明 |
+|---|---|---|
+| **Gitee**（国内推荐） | [gitee.com/lob0904/.../releases](https://gitee.com/lob0904/duogongnengduopingtaixiazaiqi/releases) | 国内直连，下载快 |
+| GitHub | [Releases](../../releases) | 海外 / 已挂代理 |
+
+下载 zip → 解压 → 双击 `下载器UI.exe`。
 
 **不需要激活码，不需要注册，打开就能用。**
 
-### 方式二：从源码构建
+### 方式二：从源码构建（开发者，普通用户跳过）
 
 需要 Node.js 24+ 和 Windows（csc.exe 是系统自带的 .NET Framework 编译器）。
 

@@ -104,3 +104,7 @@ desktop.ini
 #   src/engines/*.mjs
 #   docs/*.md
 #   tools/取依赖.mjs
+
+# 提交信息临时文件
+.commit-msg.txt
+

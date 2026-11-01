@@ -221,8 +221,11 @@ namespace DouyinDownloader
         TabControl tabs;
         TabPage tabVideo, tabMusic, tabZhihu, tabSites, tabGrab;
         TabPage tabWechat, tabPlaylist, tabStock;
+        // v1.3.0 新增：小说 / 网盘
+        TabPage tabNovel, tabPan;
         Panel topVideo, topMusic, topZhihu, topSites, topGrab, bottom;
         Panel topWechat, topPlaylist, topStock;
+        Panel topNovel, topPan;
         ProgressBar progress;
         RichTextBox txtLog;
         StatusStrip statusBar;
@@ -245,6 +248,18 @@ namespace DouyinDownloader
         NumericUpDown numStLimit;
         Button btnStBrowse, btnStOpen, btnStStart;
         CheckBox chkStLandscape;
+
+        // ───── 小说（v1.3.0）─────
+        TextBox txtNvUrl, txtNvOut;
+        NumericUpDown numNvFrom, numNvTo, numNvDelay;
+        Button btnNvBrowse, btnNvOpen, btnNvStart, btnNvStop, btnNvList;
+        CheckBox chkNvMeta;
+
+        // ───── 网盘（v1.3.0）─────
+        TextBox txtPanUrl, txtPanOut, txtPanCode;
+        ComboBox cmbPanNet;
+        Button btnPanBrowse, btnPanOpen, btnPanStart, btnPanStop, btnPanList, btnPanLogin;
+        CheckBox chkPanDeep;
 
         Process engine = null;
         Thread reader = null;
@@ -1275,12 +1290,14 @@ namespace DouyinDownloader
         // ═══════════════════════════ UI ═══════════════════════════
         void BuildUi()
         {
-            Text = "统一下载器 " + AppVersion + InternalTag + "  ·  抖音/音乐/站点视频/抓取/知乎";
+            Text = "统一下载器 " + AppVersion + InternalTag + "  ·  抖音/音乐/视频/抓取/知乎/公众号/小说/网盘";
             StartPosition = FormStartPosition.CenterScreen;
-            // 8 个标签页（v1.1.0 加了公众号/歌单/素材）在 1060 宽下挤成两行，
-            // 底部还会冒滚动箭头，看着像坏了。加宽到 1280。
-            ClientSize = new Size(1280, 820);
-            MinimumSize = new Size(980, 660);
+            // 标签页数量演进：
+            //   5 个（v1.0）→ 1060 宽
+            //   8 个（v1.1.0，+公众号/歌单/素材）→ 1280 宽，否则会挤成两行并冒出滚动箭头
+            //  10 个（v1.3.0，+小说/网盘）→ 1400 宽，1280 下「网盘」标签会被截掉一半
+            ClientSize = new Size(1400, 820);
+            MinimumSize = new Size(1000, 660);
             Font = new Font("Microsoft YaHei UI", 9F);
             BackColor = Color.FromArgb(250, 250, 252);
 
@@ -1291,7 +1308,6 @@ namespace DouyinDownloader
             tabVideo = new TabPage("抖音视频");
             tabMusic = new TabPage("音乐");
             tabGrab = new TabPage("网页抓取");
-            tabGrab.BackColor = Color.White;
             tabSites = new TabPage("站点视频");
             tabSites.BackColor = Color.White;
             tabZhihu = new TabPage("知乎");
@@ -1299,12 +1315,18 @@ namespace DouyinDownloader
             tabWechat = new TabPage("公众号");
             tabPlaylist = new TabPage("歌单");
             tabStock = new TabPage("素材");
+            // v1.3.0 新增两个页：小说 / 网盘
+            tabNovel = new TabPage("小说");
+            tabPan = new TabPage("网盘");
             tabVideo.BackColor = Color.White;
             tabMusic.BackColor = Color.White;
+            tabGrab.BackColor = Color.White;
             tabZhihu.BackColor = Color.White;
             tabWechat.BackColor = Color.White;
             tabPlaylist.BackColor = Color.White;
             tabStock.BackColor = Color.White;
+            tabNovel.BackColor = Color.White;
+            tabPan.BackColor = Color.White;
 
             BuildVideoTab();
             BuildMusicTab();
@@ -1314,6 +1336,8 @@ namespace DouyinDownloader
             BuildWechatTab();
             BuildPlaylistTab();
             BuildStockTab();
+            BuildNovelTab();
+            BuildPanTab();
 
             tabs.TabPages.Add(tabVideo);
             tabs.TabPages.Add(tabMusic);
@@ -1323,6 +1347,8 @@ namespace DouyinDownloader
             tabs.TabPages.Add(tabWechat);
             tabs.TabPages.Add(tabPlaylist);
             tabs.TabPages.Add(tabStock);
+            tabs.TabPages.Add(tabNovel);
+            tabs.TabPages.Add(tabPan);
 
             // 底部公共区
             bottom = new Panel();
@@ -1889,7 +1915,11 @@ namespace DouyinDownloader
             topGrab.BackColor = Color.White;
 
             var lblU = new Label();
-            lblU.Text = "网页地址（通用抓取，不针对特定站点；遇到 403 请手动在浏览器打开一次）";
+            // v1.3.0：明确列出已适配的站点。
+            // 之前只写「通用抓取，不针对特定站点」，用户根本不知道 CSDN / 掘金能抓，
+            // 遇到 CSDN 的安全验证也不知道是程序问题还是站点问题。
+            lblU.Text = "网页地址 —— 已适配：CSDN / 掘金 / 简书 / 博客园 / Wikipedia 等；也可抓任意公开网页。"
+                      + "（CSDN 已处理无头浏览器检测，无需手动过验证）";
             lblU.Location = new Point(14, 10);
             lblU.AutoSize = true;
             lblU.ForeColor = Color.FromArgb(80, 80, 90);
@@ -2543,6 +2573,308 @@ namespace DouyinDownloader
             tabStock.Controls.Add(topStock);
         }
 
+        // ═══════════════════════════ 小说（v1.3.0）═══════════════════════════
+        void BuildNovelTab()
+        {
+            topNovel = new Panel();
+            topNovel.Dock = DockStyle.Top;
+            topNovel.Height = 168;
+            topNovel.Padding = new Padding(12, 8, 12, 8);
+            topNovel.BackColor = Color.White;
+
+            var lblUrl = new Label();
+            lblUrl.Text = "书籍链接";
+            lblUrl.Location = new Point(14, 12);
+            lblUrl.AutoSize = true;
+
+            txtNvUrl = new TextBox();
+            txtNvUrl.Location = new Point(84, 9);
+            txtNvUrl.Size = new Size(740, 24);
+            txtNvUrl.BorderStyle = BorderStyle.FixedSingle;
+            var tipUrl = new ToolTip();
+            tipUrl.SetToolTip(txtNvUrl,
+                "支持：\n" +
+                "  biquge365.net/book/xxxx/\n" +
+                "  17k.com/book/xxxxxxx.html\n" +
+                "  bqg70.com/book/xxxxxx/\n" +
+                "  xbiquge.bz/book/xxxxxxx/\n\n" +
+                "⚠ 17K 只有前几章免费，后面是 VIP，站点不提供正文。");
+
+            btnNvList = new Button();
+            btnNvList.Text = "只看目录";
+            btnNvList.Location = new Point(834, 8);
+            btnNvList.Size = new Size(88, 26);
+            btnNvList.Click += delegate { StartNovel(true); };
+
+            var lblFrom = new Label();
+            lblFrom.Text = "章节范围";
+            lblFrom.Location = new Point(14, 52);
+            lblFrom.AutoSize = true;
+
+            numNvFrom = new NumericUpDown();
+            numNvFrom.Location = new Point(84, 49);
+            numNvFrom.Size = new Size(70, 24);
+            numNvFrom.Minimum = 1;
+            numNvFrom.Maximum = 99999;
+            numNvFrom.Value = 1;
+
+            var lblTo = new Label();
+            lblTo.Text = "→";
+            lblTo.Location = new Point(160, 52);
+            lblTo.AutoSize = true;
+
+            numNvTo = new NumericUpDown();
+            numNvTo.Location = new Point(180, 49);
+            numNvTo.Size = new Size(80, 24);
+            numNvTo.Minimum = 0;
+            numNvTo.Maximum = 99999;
+            numNvTo.Value = 0;
+            var tipTo = new ToolTip();
+            tipTo.SetToolTip(numNvTo, "填 0 = 下到最后一章。分段下载可绕开站点限流。");
+
+            var lblDelay = new Label();
+            lblDelay.Text = "章节间隔";
+            lblDelay.Location = new Point(280, 52);
+            lblDelay.AutoSize = true;
+
+            numNvDelay = new NumericUpDown();
+            numNvDelay.Location = new Point(352, 49);
+            numNvDelay.Size = new Size(70, 24);
+            numNvDelay.Minimum = 0;
+            numNvDelay.Maximum = 10000;
+            numNvDelay.Increment = 100;
+            numNvDelay.Value = 800;
+            var tipDelay = new ToolTip();
+            tipDelay.SetToolTip(numNvDelay,
+                "每章之间的毫秒数。\n" +
+                "站点慢或整本下载中途变慢时，调到 1500~2000。");
+
+            var lblMs = new Label();
+            lblMs.Text = "毫秒";
+            lblMs.Location = new Point(426, 52);
+            lblMs.AutoSize = true;
+            lblMs.ForeColor = Color.FromArgb(120, 120, 130);
+
+            var lblO = new Label();
+            lblO.Text = "保存到";
+            lblO.Location = new Point(14, 90);
+            lblO.AutoSize = true;
+
+            txtNvOut = new TextBox();
+            txtNvOut.Location = new Point(84, 87);
+            txtNvOut.Size = new Size(740, 24);
+            txtNvOut.Text = Path.Combine(Application.StartupPath, "downloads", "小说");
+
+            btnNvBrowse = new Button();
+            btnNvBrowse.Text = "浏览…";
+            btnNvBrowse.Location = new Point(834, 86);
+            btnNvBrowse.Size = new Size(80, 26);
+            btnNvBrowse.Click += delegate { BrowseInto(txtNvOut); };
+
+            btnNvOpen = new Button();
+            btnNvOpen.Text = "打开目录";
+            btnNvOpen.Location = new Point(922, 86);
+            btnNvOpen.Size = new Size(88, 26);
+            btnNvOpen.Click += delegate { OpenDir(txtNvOut.Text); };
+
+            btnNvStart = new Button();
+            btnNvStart.Text = "开始下载";
+            btnNvStart.Location = new Point(1018, 84);
+            btnNvStart.Size = new Size(88, 28);
+            btnNvStart.Click += delegate { StartNovel(false); };
+
+            btnNvStop = new Button();
+            btnNvStop.Text = "停止";
+            btnNvStop.Location = new Point(1114, 84);
+            btnNvStop.Size = new Size(70, 28);
+            btnNvStop.Enabled = false;
+            btnNvStop.Click += delegate { StopGeneric(btnNvStart, btnNvStop); };
+
+            var lblNote = new Label();
+            lblNote.Text = "支持 biquge365 / 17k / bqg70 / xbiquge 。"
+                         + "17K 的 VIP 章节站点不提供正文，程序会明确跳过并提示，不是程序问题。";
+            lblNote.Location = new Point(14, 126);
+            lblNote.AutoSize = true;
+            lblNote.ForeColor = Color.FromArgb(120, 120, 130);
+            lblNote.Font = new Font("Microsoft YaHei UI", 8.5F);
+
+            topNovel.Controls.Add(lblUrl);
+            topNovel.Controls.Add(txtNvUrl);
+            topNovel.Controls.Add(btnNvList);
+            topNovel.Controls.Add(lblFrom);
+            topNovel.Controls.Add(numNvFrom);
+            topNovel.Controls.Add(lblTo);
+            topNovel.Controls.Add(numNvTo);
+            topNovel.Controls.Add(lblDelay);
+            topNovel.Controls.Add(numNvDelay);
+            topNovel.Controls.Add(lblMs);
+            topNovel.Controls.Add(lblO);
+            topNovel.Controls.Add(txtNvOut);
+            topNovel.Controls.Add(btnNvBrowse);
+            topNovel.Controls.Add(btnNvOpen);
+            topNovel.Controls.Add(btnNvStart);
+            topNovel.Controls.Add(btnNvStop);
+            topNovel.Controls.Add(lblNote);
+
+            tabNovel.Controls.Add(topNovel);
+        }
+
+        // ═══════════════════════════ 网盘（v1.3.0）═══════════════════════════
+        void BuildPanTab()
+        {
+            topPan = new Panel();
+            topPan.Dock = DockStyle.Top;
+            topPan.Height = 190;
+            topPan.Padding = new Padding(12, 8, 12, 8);
+            topPan.BackColor = Color.White;
+
+            // ⚠ 顶部告示：只有蓝奏云实测可用
+            var lblWarn = new Label();
+            lblWarn.Text = "⚠ 实验性功能：九家网盘里只有「蓝奏云」经过完整实测，"
+                         + "其余要么需登录、要么未实现。请勿当稳定功能使用。";
+            lblWarn.Location = new Point(14, 6);
+            lblWarn.Size = new Size(1180, 20);
+            lblWarn.ForeColor = Color.FromArgb(200, 80, 30);
+            lblWarn.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
+
+            var lblUrl = new Label();
+            lblUrl.Text = "分享链接";
+            lblUrl.Location = new Point(14, 36);
+            lblUrl.AutoSize = true;
+
+            txtPanUrl = new TextBox();
+            txtPanUrl.Location = new Point(84, 33);
+            txtPanUrl.Size = new Size(740, 24);
+            txtPanUrl.BorderStyle = BorderStyle.FixedSingle;
+            var tipUrl = new ToolTip();
+            tipUrl.SetToolTip(txtPanUrl,
+                "可以粘多条链接（一行一条），程序会自动识别网盘类型。\n\n" +
+                "✅ 蓝奏云（实测可用）\n" +
+                "⚠ 天翼 / 夸克 / 123云盘\n" +
+                "❌ 移动 / UC / 阿里 / 迅雷 / 百度（未实现）");
+
+            var lblNet = new Label();
+            lblNet.Text = "指定网盘";
+            lblNet.Location = new Point(834, 36);
+            lblNet.AutoSize = true;
+
+            cmbPanNet = new ComboBox();
+            cmbPanNet.DropDownStyle = ComboBoxStyle.DropDownList;
+            cmbPanNet.Location = new Point(900, 33);
+            cmbPanNet.Size = new Size(130, 24);
+            cmbPanNet.Items.AddRange(new object[] {
+                "自动识别",
+                "蓝奏云", "123云盘", "天翼云盘", "移动云盘",
+                "夸克网盘", "百度网盘", "阿里云盘", "迅雷云盘", "UC网盘"
+            });
+            cmbPanNet.SelectedIndex = 0;
+            var tipNet = new ToolTip();
+            tipNet.SetToolTip(cmbPanNet, "一般不用选，程序按链接域名自动判断。");
+
+            var lblCode = new Label();
+            lblCode.Text = "提取码";
+            lblCode.Location = new Point(1046, 36);
+            lblCode.AutoSize = true;
+
+            txtPanCode = new TextBox();
+            txtPanCode.Location = new Point(1100, 33);
+            txtPanCode.Size = new Size(90, 24);
+            txtPanCode.BorderStyle = BorderStyle.FixedSingle;
+            txtPanCode.Enabled = true;
+            var tipCode = new ToolTip();
+            tipCode.SetToolTip(txtPanCode,
+                "私密分享的提取码（4 位）。\n" +
+                "天翼云盘这类需要访问码的分享，填这里。");
+
+            var lblO = new Label();
+            lblO.Text = "保存到";
+            lblO.Location = new Point(14, 74);
+            lblO.AutoSize = true;
+
+            txtPanOut = new TextBox();
+            txtPanOut.Location = new Point(84, 71);
+            txtPanOut.Size = new Size(740, 24);
+            txtPanOut.Text = Path.Combine(Application.StartupPath, "downloads", "网盘");
+
+            btnPanBrowse = new Button();
+            btnPanBrowse.Text = "浏览…";
+            btnPanBrowse.Location = new Point(834, 70);
+            btnPanBrowse.Size = new Size(80, 26);
+            btnPanBrowse.Click += delegate { BrowseInto(txtPanOut); };
+
+            btnPanOpen = new Button();
+            btnPanOpen.Text = "打开目录";
+            btnPanOpen.Location = new Point(922, 70);
+            btnPanOpen.Size = new Size(88, 26);
+            btnPanOpen.Click += delegate { OpenDir(txtPanOut.Text); };
+
+            chkPanDeep = new CheckBox();
+            chkPanDeep.Text = "展开文件夹";
+            chkPanDeep.Location = new Point(1020, 72);
+            chkPanDeep.AutoSize = true;
+            var tipDeep = new ToolTip();
+            tipDeep.SetToolTip(chkPanDeep,
+                "配合「只看文件」用：列出文件夹内部的全部文件。\n" +
+                "夸克实测一个分享能展开出 2 万多个文件。");
+
+            btnPanList = new Button();
+            btnPanList.Text = "只看文件";
+            btnPanList.Location = new Point(14, 108);
+            btnPanList.Size = new Size(88, 28);
+            btnPanList.Click += delegate { StartPan(true); };
+
+            btnPanStart = new Button();
+            btnPanStart.Text = "开始下载";
+            btnPanStart.Location = new Point(110, 108);
+            btnPanStart.Size = new Size(88, 28);
+            btnPanStart.Click += delegate { StartPan(false); };
+
+            btnPanStop = new Button();
+            btnPanStop.Text = "停止";
+            btnPanStop.Location = new Point(206, 108);
+            btnPanStop.Size = new Size(70, 28);
+            btnPanStop.Enabled = false;
+            btnPanStop.Click += delegate { StopGeneric(btnPanStart, btnPanStop); };
+
+            btnPanLogin = new Button();
+            btnPanLogin.Text = "登录网盘";
+            btnPanLogin.Location = new Point(284, 108);
+            btnPanLogin.Size = new Size(88, 28);
+            btnPanLogin.Click += delegate { StartPanLogin(); };
+            var tipLogin = new ToolTip();
+            tipLogin.SetToolTip(btnPanLogin,
+                "打开浏览器让你扫码登录（夸克 / 百度等需要登录才能下）。\n" +
+                "登录一次，凭据长期保存，之后自动完成。");
+
+            var lblNote = new Label();
+            lblNote.Text = "蓝奏云可直接下。夸克/天翼的解析链路已打通但未完整测试；"
+                         + "百度/阿里/迅雷/UC/移动/123云盘目前只识别链接，会返回「未实现」。";
+            lblNote.Location = new Point(14, 146);
+            lblNote.Size = new Size(1180, 36);
+            lblNote.ForeColor = Color.FromArgb(120, 120, 130);
+            lblNote.Font = new Font("Microsoft YaHei UI", 8.5F);
+
+            topPan.Controls.Add(lblWarn);
+            topPan.Controls.Add(lblUrl);
+            topPan.Controls.Add(txtPanUrl);
+            topPan.Controls.Add(lblNet);
+            topPan.Controls.Add(cmbPanNet);
+            topPan.Controls.Add(lblCode);
+            topPan.Controls.Add(txtPanCode);
+            topPan.Controls.Add(lblO);
+            topPan.Controls.Add(txtPanOut);
+            topPan.Controls.Add(btnPanBrowse);
+            topPan.Controls.Add(btnPanOpen);
+            topPan.Controls.Add(chkPanDeep);
+            topPan.Controls.Add(btnPanList);
+            topPan.Controls.Add(btnPanStart);
+            topPan.Controls.Add(btnPanStop);
+            topPan.Controls.Add(btnPanLogin);
+            topPan.Controls.Add(lblNote);
+
+            tabPan.Controls.Add(topPan);
+        }
+
         // ═══════════════════════════ 布局 ═══════════════════════════
         // 150% DPI 下 WinForms 会把控件按 1.5 放大，但我们在代码里算的坐标是物理像素。
         // 所有"设计尺寸"常量都要过一遍 S() 换算，否则按钮会互相压住或跑出窗口。
@@ -3002,6 +3334,40 @@ namespace DouyinDownloader
             }
             catch { try { engine.Kill(); } catch { } }
             CleanupVideo();
+        }
+
+        /// <summary>
+        /// 通用停止（v1.3.0 的小说 / 网盘页用）。
+        ///
+        /// 不复用 StopDownload 的原因：那个函数是给抖音页写的，
+        /// 收尾 CleanupVideo() 里只把 btnStart / btnStop 两个抖音页按钮复位，
+        /// 小说页和网盘页的按钮会停在禁用状态，看起来像卡死了。
+        /// </summary>
+        void StopGeneric(Button startBtn, Button stopBtn)
+        {
+            if (engine == null) return;
+            stopping = true;
+            if (stopBtn != null) stopBtn.Enabled = false;
+            statusLabel.Text = "正在停止…";
+            Log("");
+            Log("[停止] 正在终止…");
+            try
+            {
+                var psi = new ProcessStartInfo("taskkill", "/PID " + engine.Id + " /T /F");
+                psi.CreateNoWindow = true;
+                psi.UseShellExecute = false;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                Process.Start(psi);
+            }
+            catch { try { engine.Kill(); } catch { } }
+
+            try { if (engine != null) engine.Dispose(); } catch { }
+            engine = null;
+            stopping = false;
+            if (startBtn != null) startBtn.Enabled = true;
+            if (stopBtn != null) stopBtn.Enabled = false;
+            statusLabel.Text = "就绪";
         }
 
         void ReadVideoLoop(object obj)
@@ -4200,6 +4566,176 @@ namespace DouyinDownloader
             Log("");
             Log("提示：已下好的歌会自动跳过，中断后重跑不会重复下载。");
             RunEngineTask(eng, uni, "playlist", args, "歌单下载", outDir, btnPlStart, null);
+        }
+
+        // ─────────── 小说（v1.3.0）───────────
+        void StartNovel(bool listOnly)
+        {
+            SelfLog("[nv] 进入 StartNovel listOnly=" + listOnly);
+            if (!RequireLicense("小说")) { SelfLog("[nv] 授权未通过"); return; }
+            if (engine != null) { SelfLog("[nv] 已有任务在跑"); return; }
+
+            string raw = txtNvUrl.Text.Trim();
+            if (raw.Length == 0)
+            {
+                MsgOrLog("请先填书籍链接", "提示");
+                txtNvUrl.Focus();
+                return;
+            }
+
+            bool uni;
+            string eng = FindEngine("小说下载器.exe", out uni);
+            if (eng == null)
+            {
+                SelfLog("[engine] 找不到引擎");
+                MsgOrLog("找不到引擎。\n\n请把「下载器.exe」和本程序放在同一个文件夹。", "缺少引擎");
+                return;
+            }
+
+            string outDir = txtNvOut.Text.Trim();
+            if (outDir.Length == 0)
+            {
+                outDir = Path.Combine(Application.StartupPath, "downloads", "小说");
+                txtNvOut.Text = outDir;
+            }
+            try { if (!Directory.Exists(outDir)) Directory.CreateDirectory(outDir); }
+            catch (Exception ex) { MsgOrLog("无法创建目录:\n" + ex.Message, "错误"); return; }
+
+            int from = (int)numNvFrom.Value;
+            int to = (int)numNvTo.Value;
+            int delay = (int)numNvDelay.Value;
+
+            string args = Quote(raw) + " -o " + Quote(outDir);
+            if (listOnly)
+            {
+                args += " --list";
+            }
+            else
+            {
+                args += " --from " + from.ToString();
+                // 0 表示不限，不传 --to 就是下到最后一章
+                if (to > 0) args += " --to " + to.ToString();
+            }
+            args += " --delay " + delay.ToString();
+
+            if (!listOnly)
+            {
+                Log("");
+                Log("提示：站点对同一 IP 有累计限流。整本中途变慢属于正常现象，");
+                Log("      可分段下载（章节范围）或加大章节间隔。");
+            }
+
+            RunEngineTask(eng, uni, "novel", args,
+                listOnly ? "小说目录" : "小说下载", outDir,
+                listOnly ? btnNvList : btnNvStart, listOnly ? null : btnNvStop);
+        }
+
+        // ─────────── 网盘（v1.3.0）───────────
+        void StartPan(bool listOnly)
+        {
+            SelfLog("[pan] 进入 StartPan listOnly=" + listOnly);
+            if (!RequireLicense("网盘")) { SelfLog("[pan] 授权未通过"); return; }
+            if (engine != null) { SelfLog("[pan] 已有任务在跑"); return; }
+
+            string raw = txtPanUrl.Text.Trim();
+            if (raw.Length == 0)
+            {
+                MsgOrLog("请先填网盘分享链接", "提示");
+                txtPanUrl.Focus();
+                return;
+            }
+
+            bool uni;
+            string eng = FindEngine("网盘下载器.exe", out uni);
+            if (eng == null)
+            {
+                SelfLog("[engine] 找不到引擎");
+                MsgOrLog("找不到引擎。\n\n请把「下载器.exe」和本程序放在同一个文件夹。", "缺少引擎");
+                return;
+            }
+
+            string outDir = txtPanOut.Text.Trim();
+            if (outDir.Length == 0)
+            {
+                outDir = Path.Combine(Application.StartupPath, "downloads", "网盘");
+                txtPanOut.Text = outDir;
+            }
+            try { if (!Directory.Exists(outDir)) Directory.CreateDirectory(outDir); }
+            catch (Exception ex) { MsgOrLog("无法创建目录:\n" + ex.Message, "错误"); return; }
+
+            // 多行输入：每条链接单独传一个位置参数。
+            // ⚠ 不能整段当一个参数传 —— 交接文档坑 24：
+            //   UI 多行框粘两条链接，整单会被当成一个 "url1\nurl2" 字符串丢掉。
+            var lines = raw.Replace("\r\n", "\n").Split('\n');
+            var parts = new System.Collections.Generic.List<string>();
+            foreach (var ln in lines)
+            {
+                string t = ln.Trim();
+                if (t.Length > 0) parts.Add(Quote(t));
+            }
+            if (parts.Count == 0) { MsgOrLog("没找到有效链接", "提示"); return; }
+
+            string args = string.Join(" ", parts.ToArray()) + " -o " + Quote(outDir);
+
+            string code = txtPanCode.Text.Trim();
+            if (code.Length > 0) args += " --code " + Quote(code);
+
+            if (listOnly)
+            {
+                args += " --list";
+                if (chkPanDeep.Checked) args += " --deep";
+            }
+
+            // 指定网盘（可选）
+            if (cmbPanNet.SelectedIndex > 0)
+            {
+                string[] ids = { "", "lanzou", "123pan", "189", "139", "quark", "baidu", "aliyun", "xunlei", "uc" };
+                args += " --net " + ids[cmbPanNet.SelectedIndex];
+            }
+
+            if (!listOnly)
+            {
+                Log("");
+                Log("⚠ 网盘是实验性功能：九家里只有蓝奏云经过完整实测。");
+                Log("   夸克/天翼/123 未完整测试；百度/阿里/迅雷/UC/移动 未实现。");
+                Log("");
+            }
+
+            RunEngineTask(eng, uni, "pan", args,
+                listOnly ? "网盘文件列表" : "网盘下载", outDir,
+                listOnly ? btnPanList : btnPanStart, listOnly ? null : btnPanStop);
+        }
+
+        void StartPanLogin()
+        {
+            SelfLog("[pan] 进入 StartPanLogin");
+            if (engine != null) { SelfLog("[pan] 已有任务在跑"); return; }
+
+            bool uni;
+            string eng = FindEngine("网盘下载器.exe", out uni);
+            if (eng == null)
+            {
+                MsgOrLog("找不到引擎。\n\n请把「下载器.exe」和本程序放在同一个文件夹。", "缺少引擎");
+                return;
+            }
+
+            // 下拉选中哪家就登哪家；选了「自动识别」默认夸克
+            string[] ids = { "quark", "lanzou", "123pan", "189", "139", "quark", "baidu", "aliyun", "xunlei", "uc" };
+            string net = cmbPanNet.SelectedIndex > 0 ? ids[cmbPanNet.SelectedIndex] : "quark";
+
+            Log("");
+            Log("══════════════════════════════════════");
+            Log("  会打开浏览器，请在里面扫码登录。");
+            Log("  登录成功后凭据长期保存，之后无需再登录。");
+            Log("  （最多等 5 分钟）");
+            Log("══════════════════════════════════════");
+            Log("");
+
+            string outDir = txtPanOut.Text.Trim();
+            if (outDir.Length == 0) outDir = Path.Combine(Application.StartupPath, "downloads", "网盘");
+
+            RunEngineTask(eng, uni, "pan", "--login --net " + net,
+                "网盘登录", outDir, btnPanLogin, null);
         }
 
         // ─────────── 素材 ───────────

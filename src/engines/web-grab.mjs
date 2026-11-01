@@ -248,11 +248,16 @@ function collectScript() {
     const bodyAll = (document.body ? document.body.innerText : '') || '';
     const titleStr = document.title || '';
 
-    const challengeRe = /请稍候|Just a moment|Checking your browser|Verify you are human|Cloudflare|正在进行安全验证|人机验证/i;
+    const challengeRe = /请稍候|Just a moment|Checking your browser|Verify you are human|Cloudflare|正在进行安全验证|人机验证|安全验证|Security Verification|拖动滑块|请完成.{0,6}验证/i;
     const loginWallRe = /无权访问|请先登录|登录后查看|请登录|Sign in to continue|Access denied|401|403/i;
 
     // 页面很短且命中特征 → 判为拦截页
-    if (bodyAll.length < 3000 && challengeRe.test(titleStr + ' ' + bodyAll)) {
+    // v1.3.0：CSDN 的验证页 HTML 有 29 KB，innerText 也可能超过 3000，
+    //         但正文容器 #content_views 一定不存在。所以再加一条：
+    //         命中验证特征且拿不到正文容器，就判为 challenge。
+    const hasChallengeText = challengeRe.test(titleStr + ' ' + bodyAll);
+    const hasContentBox = !!(document.querySelector('#content_views, [itemprop="articleBody"], .article-content, article'));
+    if (hasChallengeText && (!hasContentBox || bodyAll.length < 3000)) {
       return {
         __error: 'challenge',
         __detail: titleStr + ' | ' + bodyAll.slice(0, 120),
@@ -701,7 +706,9 @@ async function main() {
       if (data.__error) {
         const MSG = {
           network: '页面加载失败：网络不通（检查网络、代理或该站点是否被墙）',
-          challenge: '被反爬拦截：站点要求人机验证。用 --headful 手动过一次，之后 profile 会记住',
+          challenge: '被反爬拦截：站点要求人机验证（滑块/拼图）。\n'
+                   + '  → 加 --headful 打开浏览器，手动拖一次滑块；\n'
+                   + '  → 同一次运行里的后续链接会复用同一个 profile，不用反复拖。',
           'login-wall': '需要登录：该页面要求先登录才能看内容',
           'chrome-page': '页面加载失败：Chrome 内部页（' + data.url + '）',
         };

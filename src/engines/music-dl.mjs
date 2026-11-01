@@ -443,18 +443,168 @@ async function resolveKugou(song) {
   throw new Error(lastErr);
 }
 
-// ───────────────────────── 三平台聚合 ─────────────────────────
+// ═════════════════════ VIP 兜底源（聚合 API）═════════════════════
+//
+// 背景：QQ 音乐对会员曲直接 result=104003 不下发文件，
+//      网易云官方接口 VIP 曲也只给 trial 片段。上面四家都拿不到时，
+//      走这层聚合接口拿完整音源（含 999 无损档）。
+//
+// 注意：这是第三方聚合服务，可用性会波动。503/超时都当"该源不可用"
+//      处理，不影响其他源，也不让整单失败。
+
+const GD_HOST = 'music-api.gdstudio.xyz';
+const GD_PLATFORMS = [
+  { src: 'netease', name: '网易云·VIP' },
+  { src: 'joox',    name: 'JOOX' },
+];
+
+/** 带重试和退避的聚合接口请求（503 是常态，不能一次就判死） */
+async function gdQuery(qs, tries = 2, timeoutMs = 8000) {
+  const url = `https://${GD_HOST}/api.php?${qs}`;
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await getText(url, {
+        referer: 'https://music.163.com/',
+        timeout: timeoutMs,
+      });
+      try {
+        return JSON.parse(r.text);
+      } catch {
+        throw new Error(`聚合接口返回非 JSON: ${r.text.slice(0, 100)}`);
+      }
+    } catch (e) {
+      lastErr = e;
+      if (i < tries - 1) await sleep(300 * (i + 1));
+    }
+  }
+  throw lastErr || new Error('聚合接口不可用');
+}
+
+/** 搜索：在所有支持的聚合源里并发找，合并去重 */
+async function searchVip(keyword, limit = 5) {
+  const q = encodeURIComponent(keyword);
+  const jobs = GD_PLATFORMS.map(async (p) => {
+    try {
+      const arr = await gdQuery(
+        `types=search&source=${p.src}&name=${q}&count=${limit}&pages=1`
+      );
+      if (!Array.isArray(arr)) return [];
+      return arr.map((it) => ({
+        platform: `vip:${p.src}`,
+        platformName: p.name,
+        id: String(it.id),
+        title: clean(it.name),
+        artist: clean((it.artist || []).join('/')),
+        album: clean(it.album || ''),
+        duration: msToDur(Number(it.duration) * 10), // 该接口 duration 是"0.1 秒"单位
+        vipSource: p.src,
+      }));
+    } catch {
+      return [];
+    }
+  });
+  const all = (await Promise.all(jobs)).flat();
+  // 同一首歌多源命中时只留第一条，避免列表被同一首歌刷屏
+  const seen = new Set();
+  return all.filter((s) => {
+    const k = normTitle(s.title) + '|' + normTitle(String(s.artist).split('/')[0]);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).slice(0, limit);
+}
+
+/**
+ * 解析直链。
+ *
+ * 三级画质依次回退：999（无损）→ 320 → 128。
+ * 接口偶尔某一档返回空，不代表整首没了 —— 必须往下试。
+ */
+async function resolveVip(song) {
+  const src = song.vipSource || String(song.platform).split(':')[1] || 'netease';
+  const id = encodeURIComponent(song.id);
+  const tiers = [
+    { br: '999', ext: 'flac', kbps: 900 },
+    { br: '320', ext: 'mp3',  kbps: 320 },
+    { br: '128', ext: 'mp3',  kbps: 128 },
+  ];
+
+  let lastErr = '';
+  for (const t of tiers) {
+    try {
+      const d = await gdQuery(`types=url&source=${src}&id=${id}&br=${t.br}`, 2);
+      const link = d && d.url;
+      const size = Number(d && d.size) || 0;
+      if (!link || size < 100000) {
+        lastErr = `br=${t.br} 无直链`;
+        continue;
+      }
+      // 用真实文件头校正扩展名：接口偶尔把 flac 标成 mp3
+      let ext = t.ext;
+      try {
+        const head = await fetch(link, {
+          headers: { 'User-Agent': UA, Referer: 'https://music.163.com/', Range: 'bytes=0-11' },
+          signal: AbortSignal.timeout(10000),
+        });
+        const buf = Buffer.from(await head.arrayBuffer());
+        if (head.ok) ext = sniffAudioExt(buf) || ext;
+      } catch {}
+
+      return {
+        url: link,
+        size,
+        type: ext === 'flac' ? 'audio/flac' : 'audio/mpeg',
+        ext,
+        kbps: t.kbps,
+        referer: 'https://music.163.com/',
+        previewUrl: link, previewSize: size, previewExt: ext,
+        vipTier: t.br,
+      };
+    } catch (e) {
+      lastErr = e.message;
+    }
+  }
+  throw new Error(`VIP 源无直链 (${lastErr})`);
+}
+
+/** 按魔数判断真实音频格式 */
+function sniffAudioExt(buf) {
+  if (!buf || buf.length < 4) return '';
+  if (buf[0] === 0x66 && buf[1] === 0x4c && buf[2] === 0x61 && buf[3] === 0x43) return 'flac';
+  if (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) return 'mp3';
+  if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return 'mp3';
+  if (buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) return 'm4a';
+  if (buf[0] === 0x4f && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) return 'ogg';
+  return '';
+}
+
+// ───────────────────────── 平台聚合 ─────────────────────────
 const PLATFORMS = [
   { key: 'kuwo', name: '酷我', search: searchKuwo, resolve: resolveKuwo },
   { key: 'qq', name: 'QQ音乐', search: searchQQ, resolve: resolveQQ },
   { key: 'netease', name: '网易云', search: searchNetease, resolve: resolveNetease },
-  // 酷狗：作为补充源（儿歌/翻唱/老歌常有免费直链，补前三家的盲区）
-  { key: 'kugou', name: '酷狗', search: searchKugou, resolve: resolveKugou },
+  // 酷狗已下线（2026-11）：
+  //   m.kugou.com/getSongInfo  → errcode 1002「操作太频繁」（IP 级限流）
+  //   wwwapi.kugou.com         → err_code 30020（要求 SSA-CODE 设备签名，
+  //                              即便 privilege=0 无版权限制也不下发 play_url）
+  //   trackercdn.kugou.com     → Bad key（签名算法已变）
+  //   三个接口全废，留着只会让用户看到一屏"受限"。代码保留，需要时改回：
+  //   { key: 'kugou', name: '酷狗', search: searchKugou, resolve: resolveKugou },
+  // VIP 兜底：上面全部受限时才启用（--no-vip 可关）
+  { key: 'vip', name: 'VIP兜底', search: searchVip, resolve: resolveVip, vip: true },
 ];
 
-/** 并行搜索三平台，任何一家挂了不影响其他 */
-async function searchAll(keyword, limit) {
-  const jobs = PLATFORMS.map(async (p) => {
+/**
+ * 并行搜索各平台，任何一家挂了不影响其他。
+ *
+ * VIP 源不在这里搜：它是第三方聚合服务，慢且常 503，
+ * 无条件并进首轮会让每次搜索都白等几秒。由 searchVipFallback
+ * 按需触发（官方源全受限时）。opts.searchVip=true 可强制包含。
+ */
+async function searchAll(keyword, limit, opts = {}) {
+  const active = PLATFORMS.filter((p) => !p.vip || opts.searchVip);
+  const jobs = active.map(async (p) => {
     try {
       const songs = await p.search(keyword, limit);
       return { platform: p.key, name: p.name, ok: true, songs };
@@ -465,12 +615,70 @@ async function searchAll(keyword, limit) {
   return Promise.all(jobs);
 }
 
+/**
+ * VIP 兜底：仅在"官方源全部受限"时补一轮。
+ *
+ * 为什么不干脆并进 searchAll 一起搜：
+ *   每多一个源就多一轮网络请求，日常搜歌 4 家官方源已经够用；
+ *   VIP 源是第三方聚合服务，响应慢且会 503，无条件并进来会让
+ *   每次搜索都白等几秒。按需触发才是对的。
+ *
+ * 性能要点（踩过）：
+ *   起初是 for...await 串行查每首歌，每首又试 2 个源（每个源 3 次重试 ×
+ *   退避 400/800ms）。搜"yankee doodle"这类冷门词时被拦 10+ 条，
+ *   实测拖到 107 秒，UI 上看着就像卡死。
+ *   现在：并发查 + 最多查 4 首 + 单首只试 2 次，把最坏情况压到 ~8 秒。
+ */
+async function searchVipFallback(keyword, limit, alreadyFound) {
+  // 已经能下的歌就不再重复找，只补"全平台受限"的那些
+  const haveTitles = new Set(
+    alreadyFound.filter((s) => s.ok).map((s) => normTitle(s.title) + '|' + normTitle(String(s.artist).split('/')[0]))
+  );
+  const want = alreadyFound
+    .filter((s) => !s.ok)
+    .slice(0, 4)                       // 最多补 4 首，剩下的交给用户重搜
+    .map((s) => `${s.title} ${String(s.artist).split('/')[0]}`);
+  const queries = [...new Set(want)];
+  if (!queries.length) return [];
+
+  // 并发查：原来串行，10 首 = 10 轮 RTT
+  const lists = await Promise.all(queries.map((q) => searchVip(q, 2).catch(() => [])));
+
+  const out = [];
+  for (let qi = 0; qi < lists.length; qi++) {
+    const qTitle = normTitle(String(queries[qi]).split(' ')[0]);  // 查询串第一个词是歌名
+    for (const s of lists[qi]) {
+      // ⚠ 聚合接口的模糊匹配很松：搜「夜曲」会返回「月半小夜曲」「默」。
+      //   不校验就直接并进列表，用户看到一堆不相干的歌，
+      //   比「没有结果」更糟 —— 和交接文档里酷狗歌词那个坑同一个道理。
+      //   规则：返回的歌名与查询词必须互相包含，或前缀匹配（允许 (Live)/(伴奏) 后缀）。
+      const got = normTitle(s.title);
+      if (!got) continue;
+      const matched = got.includes(qTitle) || qTitle.includes(got)
+        || got.startsWith(qTitle) || qTitle.startsWith(got);
+      if (!matched) continue;
+
+      const k = normTitle(s.title) + '|' + normTitle(String(s.artist).split('/')[0]);
+      if (haveTitles.has(k)) continue;   // 官方源已能给，不重复
+      haveTitles.add(k);
+      out.push(s);
+    }
+  }
+  return out;
+}
+
+function resolvePlatformKey(platform) {
+  // vip:netease / vip:joox 是子源，统一映射到 'vip'
+  return platform.startsWith('vip:') ? 'vip' : platform;
+}
+
 /** 对候选歌曲解析直链 + 探测大小（并行，失败标记不可用） */
 async function resolveAll(songs, jar) {
   const pMap = Object.fromEntries(PLATFORMS.map((p) => [p.key, p]));
   return Promise.all(
     songs.map(async (s) => {
-      const p = pMap[s.platform];
+      const p = pMap[resolvePlatformKey(s.platform)];
+      if (!p) return { ...s, ok: false, error: `未知平台 ${s.platform}` };
       try {
         const r = await p.resolve(s, jar);
         return { ...s, ok: true, ...r };
@@ -628,7 +836,7 @@ async function downloadFile(url, dest, referer) {
 // ───────────────────────── 命令 ─────────────────────────
 async function cmdSearch(keyword, opts) {
   if (!opts.quiet) log(`\n搜索: ${keyword}  （三平台并行）\n`);
-  const results = await searchAll(keyword, opts.limit);
+  const results = await searchAll(keyword, opts.limit, opts);
 
   for (const r of results) {
     if (!r.ok) warn(`  ${r.name} 搜索失败: ${r.error}`);
@@ -643,7 +851,30 @@ async function cmdSearch(keyword, opts) {
 
   if (!opts.quiet) log(`共 ${all.length} 条候选，正在解析直链并探测大小...\n`);
   const jar = new Jar();
-  const resolved = await resolveAll(all, jar);
+  let resolved = await resolveAll(all, jar);
+
+  // ── VIP 兜底：官方源全挂的曲目，用聚合源补一轮 ──
+  // --no-vip 可关闭（离线/纯净模式）；歌单批量场景也可关掉省时间
+  if (!opts.noVip) {
+    const blocked = resolved.filter((r) => !r.ok);
+    if (blocked.length && !opts.quiet) {
+      log(`  ${blocked.length} 条被官方源拦截，尝试 VIP 兜底源...`);
+    }
+    if (blocked.length) {
+      try {
+        const extra = await searchVipFallback(keyword, opts.limit, resolved);
+        if (extra.length) {
+          if (!opts.quiet) log(`  VIP 兜底找到 ${extra.length} 条候选，解析中...`);
+          const extraResolved = await resolveAll(extra, jar);
+          resolved = resolved.concat(extraResolved);
+        } else if (!opts.quiet) {
+          log('  VIP 兜底源未找到替代（可能服务不可用或确实无版权）');
+        }
+      } catch (e) {
+        if (!opts.quiet) warn(`  VIP 兜底失败: ${e.message}`);
+      }
+    }
+  }
 
   // 先过滤，再分组：被筛掉的仍保留在 resolved 里（带 filtered 标记），
   // 但不参与"最优"评选，这样用户能看懂为什么某条不可选。
@@ -683,11 +914,18 @@ async function cmdGet(keyword, opts) {
     // 指定平台：全库该平台可用结果，按体积降序，取第 pick 个
     // 必须排除 filtered —— 否则 `--format m4a` 会挑到一条 MP3，
     // 用户明明设了格式限制却拿到别的格式（过滤等于失效）。
+    //
+    // -p vip 是"所有 VIP 子源"的合集：VIP 条目 platform 记的是 vip:netease /
+    // vip:joox，直接 === 'vip' 会一条都匹配不上（踩过，报"没有可用结果"）。
+    const hit = (r) => {
+      if (opts.platform === 'vip') return String(r.platform).startsWith('vip:');
+      return r.platform === opts.platform;
+    };
     const pool = resolved
-      .filter((r) => r.ok && !r.filtered && r.platform === opts.platform)
+      .filter((r) => r.ok && !r.filtered && hit(r))
       .sort((a, b) => b.size - a.size);
     if (!pool.length) {
-      const anyFiltered = resolved.some((r) => r.ok && r.filtered && r.platform === opts.platform);
+      const anyFiltered = resolved.some((r) => r.ok && r.filtered && hit(r));
       throw new Error(
         anyFiltered
           ? `${opts.platform} 的结果都不符合当前格式/码率条件（放宽 -f / --min-kbps 后重试）`
@@ -752,8 +990,11 @@ async function cmdPreview(keyword, opts) {
 
   let target = null;
   if (opts.platform) {
+    const hit = (r) => (opts.platform === 'vip'
+      ? String(r.platform).startsWith('vip:')
+      : r.platform === opts.platform);
     const pool = resolved
-      .filter((r) => r.ok && !r.filtered && r.platform === opts.platform)
+      .filter((r) => r.ok && !r.filtered && hit(r))
       .sort((a, b) => b.size - a.size);
     if (!pool.length) throw new Error(`${opts.platform} 没有可试听的结果（或都被格式/码率条件筛掉了）`);
     target = pool[Math.max(0, (opts.pick || 1) - 1)];
@@ -816,7 +1057,15 @@ function printHelp() {
   -f, --format <list>   只要这些格式: mp3,m4a,flac（逗号分隔，可重复）
       --min-kbps <n>    只要码率不低于 n kbps（如 128、320）
       --min-size <n>    只要体积不小于 n KB
+      --no-vip          关闭 VIP 兜底源（只查官方四家）
+      --vip             歌单批量时也启用 VIP 兜底（默认关，省时间）
   -h, --help            帮助
+
+VIP 兜底:
+  官方四家（酷我/QQ/网易云/酷狗）都拿不到时，自动走第三方聚合源补一轮，
+  目标曲目如果是会员专享，这里通常能拿到完整音源（含 999 无损档）。
+  聚合源是第三方服务，会 503，失败只影响那一首，不影响整单。
+  --no-vip 可完全关闭。
 
 过滤说明:
   码率 = 文件体积 ÷ 时长，是估算值。平台不提供时长时该条码率记为 0，
@@ -824,7 +1073,7 @@ function printHelp() {
   被筛掉的条目不会消失，会在 JSON 里标记 filtered + filterReason，
   便于排查"为什么搜到了却选不了"。
 
-平台: 酷我 / QQ音乐 / 网易云
+平台: 酷我 / QQ音乐 / 网易云 / 酷狗 / VIP兜底(网易云·JOOX)
 
 示例:
   node music-dl.mjs search "雨爱"
@@ -870,6 +1119,8 @@ function parseArgs(argv) {
       case '--min-size': opts.minSizeKB = Number(argv[++i]) || 0; break;
       case '--meta': opts.meta = true; break;
       case '--meta-only': opts.meta = 'only'; break;
+      case '--no-vip': opts.noVip = true; break;
+      case '--vip': opts.vip = true; break;
       case '-h': case '--help': opts.help = true; break;
       default:
         if (a.startsWith('-')) warn(`未知参数: ${a}`);
@@ -905,7 +1156,7 @@ export async function searchAndResolve(keyword, opts = {}) {
 
   let results;
   try {
-    results = await searchAll(keyword, limit);
+    results = await searchAll(keyword, limit, opts);
   } catch (e) {
     throw new Error(`搜索失败: ${e.message}`);
   }
@@ -915,7 +1166,22 @@ export async function searchAndResolve(keyword, opts = {}) {
   if (!all.length) return { ok: false, skipped: '搜不到这首歌' };
 
   const jar = new Jar();
-  const resolved = await resolveAll(all, jar);
+  let resolved = await resolveAll(all, jar);
+
+  // 歌单批量场景：一次要给几十上百首找源，VIP 兜底会把耗时翻倍，
+  // 且歌单里通常没被拦的歌占多数 —— 默认只在显式要求时开。
+  if (opts.vip) {
+    const blocked = resolved.filter((r) => !r.ok);
+    if (blocked.length) {
+      try {
+        const extra = await searchVipFallback(keyword, limit, resolved);
+        if (extra.length) {
+          const extraResolved = await resolveAll(extra, jar);
+          resolved = resolved.concat(extraResolved);
+        }
+      } catch {}
+    }
+  }
 
   // 歌单场景默认就要"能下的，体积最大"的那条（音质最好）
   applyFilters(resolved, { formats: null, minKbps: 0, minSizeKB: 0 });
@@ -936,11 +1202,12 @@ export async function searchAndResolve(keyword, opts = {}) {
 
   const { bytes } = await downloadFile(target.url, dest, target.referer);
 
-  // 顺带抓歌词封面（失败不影响音频）
+  // 元数据（VIP 源没有独立歌词接口，用官方网易云的 ID 兜一下）
   if (opts.meta) {
     try {
+      const metaPlatform = target.vipSource || target.platform;
       const r = await fetchMusicMeta(
-        { platform: target.platform, id: target.id, title: target.title, artist: target.artist, album: target.album },
+        { platform: metaPlatform, id: target.id, title: target.title, artist: target.artist, album: target.album },
         opts.out,
         { baseName: name, quiet: true }
       );

@@ -198,6 +198,18 @@ function htmlToMarkdown(html, opts = {}) {
 
   if (!content) return null;   // 交给上层报错
 
+  // ⚠ 先干掉 script/style/noscript。
+  //   微信文章页在 #js_content 里嵌了一段防复制的 JS：
+  //     var first_sceen__time = (+new Date());
+  //     if ("" == 1 && document.getElementById('js_content')) { ... }
+  //   旧代码直接 stripTags，脚本体没有标签包裹，就被当成正文文字留下，
+  //   于是 md 末尾多出两大段 JS —— 实测踩到。
+  content = content
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, '');
+
   // 图片：公众号用 data-src（懒加载），src 常常是占位图
   const images = [];
   content = content.replace(/<img([^>]*)>/gi, (full, attrs) => {
@@ -206,10 +218,26 @@ function htmlToMarkdown(html, opts = {}) {
     let src = (ds && ds[1]) || (s && s[1]) || '';
     if (src.startsWith('//')) src = 'https:' + src;
     if (!src || src.startsWith('data:')) return '';
+    // 微信 <img> 常带 data-type="gif"，gif 需要保留（否则静图替换丢动图）
     const alt = (attrs.match(/alt=["']([^"']*)["']/i) || [])[1] || '';
     if (!images.includes(src)) images.push(src);
     return `\n\n![${alt}](${src})\n\n`;
   });
+
+  // 背景图：微信部分排版（卡片、引言块）把图片塞在 style="background-image:url(...)"
+  // 只扫 src/data-src 会漏掉，实测文章里就有这种图。
+  content = content.replace(
+    /<(\w+)([^>]*style=["'][^"']*background-image\s*:\s*url\(\s*['"]?([^'")]+)['"]?\s*\)[^"']*["'][^>]*)>/gi,
+    (full, tag, attrs, rawUrl) => {
+      let u = String(rawUrl).trim().replace(/^['"]|['"]$/g, '');
+      if (u.startsWith('//')) u = 'https:' + u;
+      if (!u || u.startsWith('data:') || u.startsWith('blob:')) return full;
+      if (!/^https?:/i.test(u)) return full;
+      if (images.includes(u)) return full;   // 同一张图不重复插
+      images.push(u);
+      return `${full}\n\n![](${u})\n\n`;
+    }
+  );
 
   // 代码块：先抽出来占位，避免被后面的标签清理破坏
   const codeBlocks = [];
@@ -250,6 +278,19 @@ function htmlToMarkdown(html, opts = {}) {
     const code = codeBlocks[Number(i)] || '';
     return '```\n' + code + '\n```';
   });
+
+  // 微信塞在正文容器里的固定文案，不是文章内容（实测踩到）
+  //   「预览时标签不可点」「不喜欢」「预览时标签不可点阅读原文」
+  const WX_BOILERPLATE = [
+    /^预览时标签不可点.*$/gm,
+    /^不喜欢$/gm,
+    /^阅读原文$/gm,
+    /^微信扫一扫.*$/gm,
+    /^长按识别二维码.*$/gm,
+    /^继续滑动看下一个$/gm,
+    /^向上滑动看下一个$/gm,
+  ];
+  for (const re of WX_BOILERPLATE) content = content.replace(re, '');
 
   // 清理多余空行
   content = content.replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim();

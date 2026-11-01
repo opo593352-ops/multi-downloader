@@ -168,6 +168,12 @@ namespace DouyinDownloader
         NumericUpDown numLimit;
         Button btnMusicSearch, btnMusicBest, btnMusicDownload, btnMusicBrowse, btnMusicOpen, btnMusicPreview;
         CheckBox chkFmtMp3, chkFmtM4a, chkFmtFlac;
+        // VIP 兜底开关：勾上才在官方四家全受限时走第三方聚合源。
+        // 默认勾选 —— 用户搜"夜曲 周杰伦"这类 VIP 曲，十有八九是为了下载，
+        // 关掉只会得到一屏"受限"。想只查官方源的人自己取消勾。
+        CheckBox chkVipFallback;
+        // 隐藏不可用：不显示 !Ok 的条目（平台受限 / 版权受限）
+        CheckBox chkHideUnavail;
         ComboBox cmbMinKbps;
         ListView listMusic;
         readonly List<MusicTrack> tracks = new List<MusicTrack>();
@@ -1668,11 +1674,31 @@ namespace DouyinDownloader
             cmbMinKbps.Location = new Point(652, 115);
             cmbMinKbps.Size = new Size(110, 24);
 
+            chkVipFallback = new CheckBox();
+            chkVipFallback.Text = "VIP 兜底源";
+            chkVipFallback.Location = new Point(778, 117);
+            chkVipFallback.AutoSize = true;
+            chkVipFallback.Checked = true;
+            chkVipFallback.ForeColor = Color.FromArgb(170, 60, 150);
+
+            // 隐藏不可用：平台受限的条目点下载必然失败，默认不显示。
+            // QQ 音乐会员曲、JOOX 无版权曲都会返回受限，
+            // 不隐藏的话一屏十几行灰字，反而把能下的那几行淹没了。
+            chkHideUnavail = new CheckBox();
+            chkHideUnavail.Text = "隐藏不可用";
+            chkHideUnavail.Location = new Point(900, 117);
+            chkHideUnavail.AutoSize = true;
+            chkHideUnavail.Checked = true;
+            chkHideUnavail.ForeColor = Color.FromArgb(120, 120, 130);
+            // 勾选状态变化后要重绘列表 —— 数据已经在 tracks 里，重跑一次搜索太浪费
+            chkHideUnavail.CheckedChanged += delegate { RepaintMusicList(); };
+
             topMusic.Controls.AddRange(new Control[] {
                 lblKey, txtMusicKey, btnMusicSearch,
                 btnMusicBest, btnMusicDownload, btnMusicPreview,
                 lblLimit, numLimit, lblMO, txtMusicOut, btnMusicBrowse, btnMusicOpen,
-                lblFmt, chkFmtMp3, chkFmtM4a, chkFmtFlac, lblKbps, cmbMinKbps
+                lblFmt, chkFmtMp3, chkFmtM4a, chkFmtFlac, lblKbps, cmbMinKbps,
+                chkVipFallback, chkHideUnavail
             });
 
             listMusic = new ListView();
@@ -3216,6 +3242,8 @@ namespace DouyinDownloader
             int[] kbpsMap = { 0, 64, 128, 192, 256, 320 };
             int minK = kbpsMap[Math.Max(0, Math.Min(kbpsMap.Length - 1, cmbMinKbps.SelectedIndex))];
             if (minK > 0) mArgs += " --min-kbps " + minK;
+            // VIP 兜底：取消勾选就传 --no-vip，引擎只查官方四家
+            if (chkVipFallback != null && !chkVipFallback.Checked) mArgs += " --no-vip";
             psi.Arguments = uniM ? "music " + mArgs : mArgs;
             psi.UseShellExecute = false;
             psi.CreateNoWindow = true;
@@ -3341,7 +3369,7 @@ namespace DouyinDownloader
                 return;
             }
 
-            int okCount = 0, total = 0, filteredCount = 0;
+            int okCount = 0, total = 0, filteredCount = 0, hiddenCount = 0;
             foreach (var item in arr)
             {
                 var d = item as Dictionary<string, object>;
@@ -3373,40 +3401,76 @@ namespace DouyinDownloader
                 t.FilterReason = Str(d, "filterReason");
                 if (t.Ok && !t.Filtered) okCount++;
                 if (t.Filtered) filteredCount++;
-
-                string state;
-                if (!t.Ok) state = "受限";
-                else if (t.Filtered) state = "不符合条件";
-                else state = "可用";
-
-                var it = new ListViewItem(new string[] {
-                    t.PlatformName,
-                    t.Title,
-                    t.Artist,
-                    state,
-                    t.Ok ? FmtSize(t.Size) : "-",
-                    t.Ok ? t.Ext.ToUpperInvariant() : "-",
-                    t.Best ? "★ 最优" : (t.Filtered ? "已筛除" : "")
-                });
-                if (t.Best) it.BackColor = Color.FromArgb(232, 248, 238);
-                if (!t.Ok) it.ForeColor = Color.FromArgb(150, 150, 155);
-                else if (t.Filtered) it.ForeColor = Color.FromArgb(190, 130, 60);
-                if (t.Filtered && t.FilterReason.Length > 0) it.ToolTipText = t.FilterReason;
-                it.Tag = t;
-                t.Row = it;
-                listMusic.Items.Add(it);
-                tracks.Add(t);
+                if (!t.Ok) hiddenCount++;
+                tracks.Add(t);          // 全部入 tracks，渲染时才决定显不显示
             }
+
+            // 渲染交给 RepaintMusicList —— 勾选「隐藏不可用」时也复用它，
+            // 不用重新跑一次搜索（那要十几秒的网络请求）。
+            RepaintMusicList();
 
             int bestCount = 0;
             foreach (var t in tracks) if (t.Best) bestCount++;
 
             string msg = "共 " + total + " 条，可用 " + okCount + " 条，最优 " + bestCount + " 首";
             if (filteredCount > 0) msg += "，按条件筛除 " + filteredCount + " 条";
+            if (hiddenCount > 0 && chkHideUnavail != null && chkHideUnavail.Checked)
+                msg += "，已隐藏 " + hiddenCount + " 条受限源";
             Log(msg);
             statusLabel.Text = "搜索完成：可用 " + okCount + "/" + total;
             btnMusicBest.Enabled = bestCount > 0;
             btnMusicDownload.Enabled = okCount > 0;
+        }
+
+        /// <summary>
+        /// 按当前过滤条件重绘音乐列表。
+        ///
+        /// 不重新请求网络 —— tracks 里已经是全部解析结果，
+        /// 切换「隐藏不可用」只是决定要不要把它们画出来。
+        /// 重新搜索一次要十几秒，纯属浪费。
+        /// </summary>
+        void RepaintMusicList()
+        {
+            if (listMusic == null) return;
+            bool hide = chkHideUnavail == null || chkHideUnavail.Checked;
+
+            listMusic.BeginUpdate();
+            try
+            {
+                listMusic.Items.Clear();
+                foreach (var t in tracks)
+                {
+                    // 不可用 = 平台受限（!Ok）。点下载必然失败，
+                    // 留着只会让列表被一屏灰字淹没。
+                    if (hide && !t.Ok) continue;
+
+                    string state;
+                    if (!t.Ok) state = "受限";
+                    else if (t.Filtered) state = "不符合条件";
+                    else state = "可用";
+
+                    var it = new ListViewItem(new string[] {
+                        t.PlatformName,
+                        t.Title,
+                        t.Artist,
+                        state,
+                        t.Ok ? FmtSize(t.Size) : "-",
+                        t.Ok ? t.Ext.ToUpperInvariant() : "-",
+                        t.Best ? "★ 最优" : (t.Filtered ? "已筛除" : "")
+                    });
+                    if (t.Best) it.BackColor = Color.FromArgb(232, 248, 238);
+                    if (!t.Ok) it.ForeColor = Color.FromArgb(150, 150, 155);
+                    else if (t.Filtered) it.ForeColor = Color.FromArgb(190, 130, 60);
+                    if (t.Filtered && t.FilterReason.Length > 0) it.ToolTipText = t.FilterReason;
+                    it.Tag = t;
+                    t.Row = it;
+                    listMusic.Items.Add(it);
+                }
+            }
+            finally
+            {
+                listMusic.EndUpdate();
+            }
 
             // 默认选中第一条最优
             foreach (ListViewItem it in listMusic.Items)

@@ -97,6 +97,8 @@ const warn = (...a) => console.error('[warn]', ...a);
  *
  *   biquge365.net  纯 HTML，无字体混淆
  *   17k.com        纯 HTML，1143 章目录一次拿全，正文在 #readArea .p
+ *   bqg70.com      纯 HTML，目录 112 章，正文 id="content"
+ *   xbiquge.bz     纯 HTML，结构与 bqg70 同源
  *
  * ── 探测过但放弃的 ──
  *
@@ -134,6 +136,32 @@ const SITES = [
     needReferer: true,
     // 目录页里的链接是绝对路径 /chapter/xxx/yyy.html
     catalogAbsolute: true,
+  },
+  {
+    // bqg70 / xbiquge.bz 同一套模板（笔趣阁系镜像）：
+    //   书籍 /book/{id}/        章节 /book/{id}/{cid}.html
+    //   正文 <div id="content">
+    // ⚠ 目录结构与 biquge365 相反：<dd> 在 <a> **里面**
+    //     <a href="/book/200698/95494720.html"><dd>第858章 xxx</dd></a>
+    //   所以 parseCatalog 不能只看 <a> 的 textContent，
+    //   要去掉内层标签再 clean（现有实现有 stripTags，能兼容）。
+    name: 'bqg70',
+    hosts: ['bqg70.com', 'www.bqg70.com', 'xbiquge.bz', 'www.xbiquge.bz'],
+    bookIdFrom: /\/book\/(\d+)\/?/,
+    // 书籍页本身就是完整目录。用 origin 拼，两个镜像域名都能用。
+    // 实际访问域名由 downloadBook 传入（见 catalogWithOrigin）。
+    catalog: (id, u) => `https://${u.hostname}/book/${id}/`,
+    chapterHref: /^\/book\/(\d+)\/(\d+)\.html$/,
+    contentSelector: /<div[^>]*id="content"[^>]*>([\s\S]*?)<\/div>/i,
+    // ⚠ 两个镜像站的标题位置不一样：
+    //   bqg70  : <h1 class="bookname">第858章 只是当时已惘然</h1>   ← h1 正确
+    //   xbiquge: <h1><a href="/">新笔趣阁</a></h1>                  ← h1 是 Logo
+    //            真标题在 <h3>（正文区上方）或 <h2> 面包屑末尾
+    // 用 bookname class 优先，退回 h3 含「第N章」的
+    titleSelector: /<h1[^>]*class="bookname"[^>]*>([\s\S]*?)<\/h1>|<h3[^>]*>([\s\S]*?第[\d一二三四五六七八九十百千万]+章[\s\S]*?)<\/h3>/i,
+    // 标题里常带「（第1页）」分页标记，要去掉
+    titleClean: /（第\s*\d+\s*页）|\(第\s*\d+\s*页\)/g,
+    needReferer: true,
   },
 ];
 
@@ -326,7 +354,65 @@ function parseCatalog(site, html, baseUrl) {
 /** 从章节页提取标题与正文 */
 function parseChapter(site, html) {
   const titleM = html.match(site.titleSelector);
-  const title = titleM ? clean(titleM[1].replace(/<[^>]+>/g, '')) : '';
+  // selector 可能有两个捕获组（h1.bookname | h3），取第一个非空的
+  const rawTitle = titleM ? (titleM[1] || titleM[2] || '') : '';
+  let title = clean(String(rawTitle).replace(/<[^>]+>/g, ''));
+
+  // 先解码 HTML 实体（&gt; / &amp; 等），再做面包屑切割。
+  // 顺序错了会切不动 —— 实测：&gt; 不进 split('>')。
+  title = title
+    .replace(/&gt;/gi, '>')
+    .replace(/&lt;/gi, '<')
+    .replace(/&amp;/gi, '&')
+    .replace(/&nbsp;/gi, ' ');
+
+  // 去掉「（第1页）」这类分页标记
+  if (site.titleClean) title = clean(title.replace(site.titleClean, ''));
+
+  // h2 面包屑形式：「新笔趣阁 > 书名 > 第1章 xxx」，取最后一个 > 之后
+  if (title.includes('>')) {
+    const seg = title.split('>').map((x) => x.trim()).filter(Boolean);
+    if (seg.length > 1) title = seg[seg.length - 1];
+  }
+  title = clean(title);
+
+  // ── base64 正文（bqg70 / xbiquge 这类）──
+  //
+  // 实测页面结构（2026-11-01）：
+  //   <div id="booktxt">
+  //     <script>document.writeln(srtb.du('PHA+56ysODU456ug...'))</script>
+  //     <script>document.writeln(apb.kvyee('PHA+5byC6YeR...'))</script>
+  //   </div>
+  //
+  // ⚠ 函数名是**随机生成的**，同一个 URL 两次请求可能拿到
+  //     srtb.du / apb.kvyee / 别的名字。只认固定函数名会漏。
+  //   所以正则只匹配「document.writeln(任意前缀.任意函数名('base64'))」。
+  //
+  // 正文被切成 N 段，每段 base64 编码后塞进 document.writeln。
+  // 直接 stripTags 只能拿到「本章未完，点击下一页继续阅读」。
+  //
+  // 解法：抓出所有 base64 段，解码，拼起来当成 HTML 再走通用清洗。
+  //
+  // 解出 base64 正文后置 true，后面跳过 contentSelector 匹配
+  let bomMarker = false;
+
+  if (site.base64Body !== false) {
+    // 匹配 document.writeln( xxx.yyy('base64') )
+    // 兼容：srtb.du / apb.kvyee / 任意 2~12 字符的 标识符.函数名
+    const re = /document\.writeln\(\s*[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*\(\s*['"]([A-Za-z0-9+/=]{20,})['"]\s*\)\s*\)/g;
+    const parts = [];
+    let bm;
+    while ((bm = re.exec(html)) !== null) {
+      try {
+        const html2 = Buffer.from(bm[1], 'base64').toString('utf8');
+        if (html2) parts.push(html2);
+      } catch { /* 单段解不开不影响其他段 */ }
+    }
+    if (parts.length) {
+      html = parts.join('');     // 后面的通用清洗直接处理这个
+      bomMarker = true;
+    }
+  }
 
   let raw;
 
@@ -354,6 +440,10 @@ function parseChapter(site, html) {
       return { title, text: '', ok: false, reason: 'empty' };
     }
     raw = paras.join('\n');
+  } else if (bomMarker) {
+    // base64 已解出，直接当正文 HTML 用。
+    // 解出来的是 <p>xxx</p> 片段，没有外层容器，不用匹配 contentSelector。
+    raw = html;
   } else {
     const contentM = html.match(site.contentSelector);
     if (!contentM) {
@@ -452,7 +542,11 @@ async function downloadBook(bookUrl, opts) {
   log(`站点: ${site.name}   书籍ID: ${bookId}`);
 
   // 1. 取目录
-  const catalogUrl = site.catalog(bookId);
+  //    部分站点的 catalog 需要用「用户实际访问的域名」拼（镜像站），
+  //    所以把 URL 对象也传进去。
+  let bookUrlObj = null;
+  try { bookUrlObj = new URL(bookUrl); } catch {}
+  const catalogUrl = site.catalog(bookId, bookUrlObj);
   log(`取目录: ${catalogUrl}`);
   const catHtml = await fetchText(catalogUrl);
   let chapters = parseCatalog(site, catHtml, catalogUrl);
@@ -496,7 +590,13 @@ async function downloadBook(bookUrl, opts) {
     const c = picked[i];
     const tag = `[${i + 1}/${picked.length}] ${c.title}`;
     try {
-      const html = await fetchText(c.url);
+      const html = await fetchText(c.url, {
+        // bqg70 / 17k 这类对无 Referer 的章节请求会拒；
+        // 给站点根域就够，不用给具体目录页 URL。
+        referer: site.needReferer
+          ? (() => { try { return new URL(c.url).origin + '/'; } catch { return undefined; } })()
+          : undefined,
+      });
       const parsed = parseChapter(site, html);
 
       if (!parsed.ok) {

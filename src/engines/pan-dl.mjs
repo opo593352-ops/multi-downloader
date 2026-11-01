@@ -157,12 +157,20 @@ const PANS = [
   },
 
   // ═══════════════ 登录层 ═══════════════
+  //
+  // 这一层的特点：分享页本身可能公开（能看文件列表），
+  // 但**下载必须登录**——要么转存到自己网盘再下，要么带 token 直取。
+  //
+  // loginUrl        : 引导登录用的页面
+  // loginCookieKey  : 判断登录成功的 cookie 名（实测值）
   {
     id: 'baidu',
     name: '百度网盘',
     hosts: ['pan.baidu.com', 'eyun.baidu.com'],
     needLogin: true,
     sharePattern: /https?:\/\/(?:pan|eyun)\.baidu\.com\/(?:s\/|share\/init\?surl=)([a-zA-Z0-9_-]+)/i,
+    loginUrl: 'https://pan.baidu.com/',
+    loginCookieKey: 'BDUSS',
     resolve: resolveBaidu,
   },
   {
@@ -171,6 +179,8 @@ const PANS = [
     hosts: ['alipan.com', 'www.alipan.com', 'aliyundrive.com', 'www.aliyundrive.com'],
     needLogin: true,
     sharePattern: /https?:\/\/(?:www\.)?(?:alipan|aliyundrive)\.com\/s\/([a-zA-Z0-9]+)/i,
+    loginUrl: 'https://www.alipan.com/',
+    loginCookieKey: 'token',
     resolve: resolveAliyun,
   },
   {
@@ -179,6 +189,9 @@ const PANS = [
     hosts: ['pan.quark.cn', 'drive.quark.cn'],
     needLogin: true,
     sharePattern: /https?:\/\/(?:pan|drive)\.quark\.cn\/s\/([a-zA-Z0-9]+)/i,
+    // 实测：b-user-id（UUID 形式）是登录后的用户标识
+    loginUrl: 'https://pan.quark.cn/',
+    loginCookieKey: 'b-user-id',
     resolve: resolveQuark,
   },
   {
@@ -187,6 +200,8 @@ const PANS = [
     hosts: ['pan.xunlei.com'],
     needLogin: true,
     sharePattern: /https?:\/\/pan\.xunlei\.com\/s\/([a-zA-Z0-9_-]+)/i,
+    loginUrl: 'https://pan.xunlei.com/',
+    loginCookieKey: 'XLSESSIONID',
     resolve: resolveXunlei,
   },
   {
@@ -195,6 +210,8 @@ const PANS = [
     hosts: ['drive.uc.cn'],
     needLogin: true,
     sharePattern: /https?:\/\/drive\.uc\.cn\/s\/([a-zA-Z0-9]+)/i,
+    loginUrl: 'https://drive.uc.cn/',
+    loginCookieKey: 'b-user-id',
     resolve: resolveUC,
   },
 ];
@@ -707,8 +724,202 @@ async function resolveAliyun(ctx) {
   return notImpl('阿里云盘');
 }
 
+/**
+ * 夸克网盘
+ *
+ * ═══════════════════════════════════════════════════════════════
+ * 接口链路（2026-11-01 实测）
+ * ═══════════════════════════════════════════════════════════════
+ *
+ * 免登录可用的两步：
+ *
+ *   POST /1/clouddrive/share/sharepage/token
+ *        body: { pwd_id: '<shareId>', passcode: '' }
+ *        → { data: { stoken: '...' } }
+ *
+ *   GET  /1/clouddrive/share/sharepage/detail
+ *        ?pwd_id=<shareId>&stoken=<stoken>&pdir_fid=0&_page=1&_size=50
+ *        → { data: { list: [{ fid, file_name, size, file_type, ... }] } }
+ *        file_type: 0=文件夹 1=文件
+ *
+ * 必须登录的一步（实测 401）：
+ *
+ *   POST /1/clouddrive/share/sharepage/save
+ *        body: { fid_list, to_pdir_fid, pwd_id, stoken }
+ *        → { status: 401, code: 31001, message: 'require login [guest]' }
+ *
+ * ── 这意味着什么 ──
+ *
+ * 夸克的下载流程是「**先转存到自己网盘，再从自己网盘下**」。
+ * 转存这一步死死锁在登录后面，没有任何绕过办法。
+ *
+ * 所以本模块的做法是：
+ *   1. 未登录也能列出文件（用户可以先看有什么）
+ *   2. 要下载时，检测到未登录 → 明确提示用户去登录
+ *   3. 用户登录一次（持久化 profile 记住 cookie）
+ *   4. 之后再跑就自动走完 save → download
+ *
+ * 这不是"破解"，是"帮用户用他自己的账号跑完本来要手点的流程"。
+ */
+/**
+ * 夸克的文件夹递归展开。
+ *
+ * 分享页的 detail 接口支持 pdir_fid 参数指定目录：
+ *   /1/clouddrive/share/sharepage/detail?...&pdir_fid=<fid>
+ *
+ * 大分享可能上万项，所以要限制：
+ *   - 最大深度 3 层
+ *   - 最大文件数 200（够日常用，多了用户也不会一个个下）
+ *   - 每层最多 100 条（接口 _size 上限）
+ */
+async function expandQuarkFolder(ctx, folderFid, depth = 0, out = []) {
+  const { cdp, sessionId, shareId, stoken } = ctx;
+
+  if (depth > 3) return out;
+  if (out.length >= 200) return out;
+
+  const det = await evalPage(cdp, sessionId, `(async () => {
+    const u = '/1/clouddrive/share/sharepage/detail?pr=ucpro&fr=pc&uc_param_str=&ver=2'
+      + '&pwd_id=' + encodeURIComponent(${JSON.stringify(shareId)})
+      + '&stoken=' + encodeURIComponent(${JSON.stringify(stoken)})
+      + '&pdir_fid=' + encodeURIComponent(${JSON.stringify(folderFid)})
+      + '&force=0&_page=1&_size=100&_fetch_banner=0&_fetch_share=0&_fetch_total=1'
+      + '&_sort=file_type:asc,updated_at:desc';
+    try {
+      const r = await fetch(u, { credentials: 'include' });
+      return await r.json();
+    } catch (e) { return { __err: String(e) }; }
+  })()`);
+
+  const list = det?.data?.list || [];
+  for (const f of list) {
+    if (out.length >= 200) break;
+    if (f.file_type === 0) {
+      await expandQuarkFolder({ ...ctx, }, f.fid, depth + 1, out);
+    } else {
+      out.push({
+        name: safeName(f.file_name),
+        size: f.size || 0,
+        fid: f.fid,
+        url: `quark:${f.fid}`,
+        needsBrowser: true,
+        shareId,
+        stoken,
+      });
+    }
+  }
+  return out;
+}
+
 async function resolveQuark(ctx) {
-  return notImpl('夸克网盘');
+  const { cdp, sessionId, url, shareId } = ctx;
+
+  await cdp.send('Page.navigate', { url }, sessionId);
+  await sleep(7000);
+
+  // 1. 拿 stoken（免登录）
+  const tokRes = await evalPage(cdp, sessionId, `(async () => {
+    try {
+      const r = await fetch('/1/clouddrive/share/sharepage/token?pr=ucpro&fr=pc&uc_param_str=', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pwd_id: ${JSON.stringify(shareId)}, passcode: '' }),
+      });
+      return await r.json();
+    } catch (e) { return { __err: String(e) }; }
+  })()`);
+
+  if (!tokRes || tokRes.__err) {
+    return { ok: false, reason: 'api-failed', hint: String(tokRes?.__err || '') };
+  }
+  const stoken = tokRes?.data?.stoken;
+  if (!stoken) {
+    // need_passcode / 分享失效
+    const msg = tokRes?.message || '';
+    return {
+      ok: false,
+      reason: /passcode|提取码|密码/i.test(msg) ? 'need-access-code' : 'token-failed',
+      hint: msg || '拿不到 stoken，分享可能已失效',
+    };
+  }
+
+  // 2. 判断登录态 —— 必须调**真实接口**验证，不能只看 cookie 名
+  //
+  // 踩过的坑（2026-11-01）：
+  //   一开始用「cookie 里有 b-user-id 就算登录」，结果永远返回已登录。
+  //   实际上 b-user-id 是**匿名设备 ID**，未登录的访客也有。
+  //   真正的登录判定必须让服务端告诉你 —— 调一个需要登录的接口：
+  //     已登录 → 200 / code 0
+  //     未登录 → 401 / code 31001 "require login [guest]"
+  const loggedIn = await evalPage(cdp, sessionId, `(async () => {
+    try {
+      const r = await fetch('/1/clouddrive/share/sharepage/save?pr=ucpro&fr=pc&uc_param_str=', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        // 故意用一个空 fid 列表：不产生副作用，但服务端仍会先校验登录
+        body: JSON.stringify({ fid_list: [], fid_token_list: [], to_pdir_fid: '0', pwd_id: 'x', stoken: 'x' }),
+      });
+      const j = await r.json();
+      return !(r.status === 401 || j.code === 31001);
+    } catch { return false; }
+  })()`);
+
+  // 3. 列文件（免登录）
+  const det = await evalPage(cdp, sessionId, `(async () => {
+    const u = '/1/clouddrive/share/sharepage/detail?pr=ucpro&fr=pc&uc_param_str=&ver=2'
+      + '&pwd_id=' + encodeURIComponent(${JSON.stringify(shareId)})
+      + '&stoken=' + encodeURIComponent(${JSON.stringify(stoken)})
+      + '&pdir_fid=0&force=0&_page=1&_size=100&_fetch_banner=0&_fetch_share=1&_fetch_total=1'
+      + '&_sort=file_type:asc,updated_at:desc';
+    try {
+      const r = await fetch(u, { credentials: 'include' });
+      return await r.json();
+    } catch (e) { return { __err: String(e) }; }
+  })()`);
+
+  const list = det?.data?.list || [];
+  if (!list.length) {
+    return { ok: false, reason: 'empty', hint: det?.message || '分享里没有文件，或需要提取码' };
+  }
+
+  const shareTitle = det?.data?.share?.title || '';
+  const total = det?.data?.total || list.length;
+  log(`    分享: ${shareTitle || '(未命名)'}  共 ${total} 项`);
+
+  const files = list.map((f) => ({
+    name: safeName(f.file_name),
+    size: f.size || 0,
+    fid: f.fid,
+    isFolder: f.file_type === 0,
+    // 文件夹：url 里存 fid，下载时再由 expandFolder 递归展开
+    url: f.file_type === 0 ? `quarkdir:${f.fid}` : `quark:${f.fid}`,
+    needsBrowser: true,
+    // 递归需要的上下文
+    shareId,
+    stoken,
+  }));
+
+  // 4. 未登录 → 明确告知，不假装成功
+  if (!loggedIn) {
+    return {
+      ok: true,
+      files,
+      note: `${total} 项`,
+      warn: '夸克下载需要登录：先转存到你自己的网盘再下载。'
+          + '跑一次 下载器.exe pan "<链接>" --login 登录（只需一次），之后自动完成。',
+      needsLogin: true,
+    };
+  }
+
+  // 5. 已登录 → 走 save → download（下一轮实现）
+  return {
+    ok: true,
+    files,
+    note: `${total} 项（已登录）`,
+    warn: '已登录：转存+下载流程待接入',
+  };
 }
 
 async function resolveXunlei(ctx) {
@@ -859,13 +1070,102 @@ function notImpl(name) {
   };
 }
 
-// ───────────────────── 主流程 ─────────────────────
+// ───────────────────── 登录流程 ─────────────────────
+
+/**
+ * 引导用户登录网盘。
+ *
+ * 原理：起一个**持久化 profile** 的浏览器，打开登录页，让用户自己扫码。
+ *      cookie 存在 `~/.downloaders-pan-profile`，之后所有解析都在这个
+ *      profile 里跑，天然带登录态。
+ *
+ * 为什么不让用户输账号密码：
+ *   1. 验证码/滑块/2FA 基本必拦，自动化极不稳定
+ *   2. 存密码是安全隐患，用户也不愿给
+ *   3. 扫码是官方设计的登录方式，最稳定
+ *
+ * 什么时候能确认登录成功：
+ *   轮询探测接口（每个站的探测点不同），或直接看 cookie 里有没有
+ *   关键字段（夸克是 `b-user-id`，百度是 `BDUSS`，阿里是 `token`）。
+ */
+async function doLogin(netId) {
+  const pan = findPanById(netId);
+  if (!pan) {
+    warn(`未知网盘: ${netId}`);
+    return 1;
+  }
+
+  const loginUrl = pan.loginUrl;
+  if (!loginUrl) {
+    warn(`${pan.name} 暂不支持登录引导`);
+    return 1;
+  }
+
+  log(`\n打开 ${pan.name} 登录页...`);
+  log('请在浏览器窗口里扫码登录，登录完成后会自动继续。\n');
+
+  const browser = await launchBrowser({ headful: true });
+  const cdp = await connectCDP(browser.wsUrl);
+
+  const { targetId } = await cdp.send('Target.createTarget', { url: loginUrl });
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+  await cdp.send('Page.enable', {}, sessionId);
+  await cdp.send('Runtime.enable', {}, sessionId);
+
+  // 轮询判断登录态，最多等 5 分钟
+  //
+  // ⚠ 不能只看 cookie 名！实测 b-user-id 是匿名设备 ID，未登录也有。
+  //   要调一个**需要登录**的接口看服务端怎么回：
+  //     /1/clouddrive/share/sharepage/save  → 401 code 31001 = 未登录
+  //     已登录 → 200 / code 0（用空 fid_list，不产生副作用）
+  const deadline = Date.now() + 5 * 60 * 1000;
+  let loggedIn = false;
+
+  while (Date.now() < deadline) {
+    await sleep(2500);
+    if (pan.id === 'quark' || pan.id === 'uc') {
+      const r = await evalPage(cdp, sessionId, `(async () => {
+        try {
+          const res = await fetch('/1/clouddrive/share/sharepage/save?pr=ucpro&fr=pc&uc_param_str=', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fid_list: [], fid_token_list: [], to_pdir_fid: '0', pwd_id: 'x', stoken: 'x' }),
+          });
+          const j = await res.json();
+          return !(res.status === 401 || j.code === 31001);
+        } catch { return false; }
+      })()`);
+      if (r === true) { loggedIn = true; break; }
+    } else {
+      // 其他站点：退回 cookie 名检测
+      const cookies = await cdp.send('Network.getAllCookies', {}, sessionId).catch(() => ({ cookies: [] }));
+      const hit = (cookies.cookies || []).some(
+        (c) => c.name === cookieKey && String(c.value || '').length > 5
+      );
+      if (hit) { loggedIn = true; break; }
+    }
+  }
+
+  cdp.close();
+  try { browser.proc.kill(); } catch {}
+
+  if (loggedIn) {
+    log(`✓ ${pan.name} 登录成功，凭据已保存到 ${browser.profileDir}`);
+    log('  之后直接跑 pan 命令即可，不用再登录。');
+    return 0;
+  }
+
+  warn(`✗ 等待超时（5 分钟），未检测到登录。`);
+  warn(`  如果已经登录了，可能是 cookie 名不是 ${cookieKey}，请提 issue。`);
+  return 1;
+}
 
 function parseArgs(argv) {
   const opts = {
     urls: [], out: null, list: false, headful: true,
     net: null, only: null, help: false,
     accessCode: null,
+    login: false,
   };
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
@@ -874,6 +1174,8 @@ function parseArgs(argv) {
     else if (a === '--list') opts.list = true;
     else if (a === '--headful') opts.headful = true;
     else if (a === '--headless') opts.headful = false;
+    else if (a === '--login') opts.login = true;
+    else if (a === '--deep') opts.deep = true;
     else if (a === '-o' || a === '--out') opts.out = argv[++i];
     else if (a === '--net') opts.net = argv[++i];
     else if (a === '--only') opts.only = argv[++i];
@@ -901,8 +1203,10 @@ function printHelp() {
 选项
   -o, --out <目录>     保存目录（默认 ./downloads/网盘）
   --list               只列出文件，不下载
+  --deep               配合 --list：展开文件夹内部
   --net <id>           强制指定网盘，跳过自动识别
   --code <访问码>       私密分享的提取码（天翼/百度/迅雷等）
+  --login              只做登录引导（扫码登录一次，凭据长期保存）
   --headless           无头模式（默认 headful，多数站点检测无头）
   -h, --help           显示本帮助
 
@@ -918,7 +1222,15 @@ ${PANS.map((p) => `  ${p.id.padEnd(8)} ${p.name.padEnd(8)} ${p.needLogin ? '需�
 
 export async function run(argv = process.argv.slice(2)) {
   const opts = parseArgs(argv);
-  if (opts.help || !opts.urls.length) { printHelp(); return opts.help ? 0 : 1; }
+  if (opts.help) { printHelp(); return 0; }
+
+  // --login：只做登录引导，不解析链接
+  if (opts.login) {
+    const netId = opts.net || (opts.urls[0] ? (matchPan(opts.urls[0])?.id) : null) || 'quark';
+    return doLogin(netId);
+  }
+
+  if (!opts.urls.length) { printHelp(); return 1; }
 
   const outDir = opts.out || path.join(process.cwd(), 'downloads', '网盘');
 
@@ -978,15 +1290,56 @@ export async function run(argv = process.argv.slice(2)) {
 
       log(`  ✓ 解析到 ${res.files.length} 个文件${res.note ? '（' + res.note + '）' : ''}`);
 
+      // 解析器可以附带提示（比如「还没登录，下载需要先登录」）
+      if (res.warn) {
+        for (const line of String(res.warn).split('\n')) warn(`  ⚠ ${line}`);
+      }
+
       if (opts.list) {
         for (const f of res.files) {
-          log(`     ${f.name}${f.size ? '  ' + fmtSize(f.size) : ''}`);
+          // --deep：列出文件夹里的内容
+          if (opts.deep && String(f.url || '').startsWith('quarkdir:')) {
+            log(`     ${f.name}/ （展开中...）`);
+            const inner = await expandQuarkFolder(
+              { cdp, sessionId, shareId: f.shareId, stoken: f.stoken },
+              f.fid
+            );
+            for (const g of inner) {
+              log(`       ├ ${g.name}${g.size ? '  ' + fmtSize(g.size) : ''}`);
+            }
+            if (!inner.length) log('       （空文件夹）');
+            continue;
+          }
+          log(`     ${f.name}${f.isFolder ? '/' : ''}${f.size ? '  ' + fmtSize(f.size) : ''}`);
         }
         continue;
       }
 
       // 逐个下载
       for (const f of res.files) {
+        // 夸克文件夹：先递归展开，再逐个下
+        if (String(f.url || '').startsWith('quarkdir:')) {
+          log(`  展开文件夹: ${f.name}`);
+          const inner = await expandQuarkFolder(
+            { cdp, sessionId, shareId: f.shareId, stoken: f.stoken },
+            f.fid
+          );
+          log(`    内含 ${inner.length} 个文件`);
+          for (const g of inner) {
+            log(`  下载: ${g.name}`);
+            const gd = await browserDownload(
+              browser.wsUrl, g.url, outDir, g.name, log
+            );
+            if (gd && gd.ok) {
+              okCount++; totalBytes += gd.size || 0;
+              log(`    ✓ ${fmtSize(gd.size || 0)}  ${gd.path}`);
+            } else {
+              warn(`    ✗ 失败: ${gd?.reason || 'unknown'}`);
+            }
+          }
+          continue;
+        }
+
         const target = path.join(outDir, safeName(f.name));
         log(`  下载: ${f.name}`);
 

@@ -315,13 +315,77 @@ function collectScript() {
       // CSDN:   #content_views   正文（#article_content 是外层包裹）
       //         ⚠ CSDN 有「展开全文」按钮，未点开时部分内容在 .hide-article-box
       //           里被截断，所以先移除该遮罩再取。
+      //
+      // CSDN 问答（ask.csdn.net）：结构很刁钻 ——
+      //   <section class="question_show_box">
+      //     <div class="ask-issue-content">
+      //       <div class="show_content_wrap">
+      //         <div class="answer-content-item">          ← 问题正文
+      //           <div id="content-<问题ID>" class="htmledit_views">
+      //   问题正文的容器竟然叫 answer-content-item（复用了答案的样式名），
+      //   而真正的 AI 答案在另一个块里。
+      //   实测不加这条选择器时，启发式会选中 AI 答案那一大坨
+      //   （「让XX来帮你回答」「问题分析」），把用户真正想问的内容丢掉。
+      //
+      //   多个问题正文块要全拼起来 —— 一个问题可能拆成 提问 + 补充说明
+      //   多个 .answer-content-item。
       const SITE_SELECTORS = [
-        '#content_views',              // CSDN / 部分博客
+        '#content_views',              // CSDN 博客正文
         '[itemprop="articleBody"]',    // 通用语义标记
         '.article-content',            // 掘金 / 简书
         '#js_content',                 // 微信公众号
         'article',
       ];
+
+      // ═══ CSDN 问答（ask.csdn.net）专用 ═══
+      //
+      // 结构（实测 2026-11-01）：
+      //   <section class="question_show_box">
+      //     <div class="ask-issue-content">
+      //       <div class="show_content_wrap">
+      //         <div class="answer-content-item">
+      //           <div id="content-<问题ID>" class="htmledit_views">  ← 问题正文
+      //
+      // 坑 1：问题正文容器复用了「答案」的类名 answer-content-item，
+      //       靠类名分不清问题和答案。
+      // 坑 2：整个页面的 .ask-issue-content 同时含问题 + 所有答案，
+      //       直接取会把 AI 答案一起吞掉。
+      // 坑 3：问题 ID 就在 URL 里（/questions/10184423/...），
+      //       所以正文容器的 id 是 content-<问题ID>。
+      //
+      // 实测：不加这条时，启发式选中 AI 答案那一大坨
+      //       （「让XX来帮你回答」「问题分析」），
+      //       用户真正想问的内容一个字都没有。
+      const askBox = document.querySelector('.question_show_box');
+      if (askBox) {
+        // 优先按 URL 里的问题 ID 精确取
+        // ⚠ 这里的正则反斜杠必须双写！
+        //   这段代码是写在模板字符串里的，\\ 才会变成源码里的 \
+        //   单写 \ 会被模板字符串吃掉：/\/questions\/(\d+)/ 
+        //   → 生成成 //questions/(d+)/（变成注释 + 丢圆括号）
+        //   → 运行时 SyntaxError: Unexpected token 'if'
+        //   这个坑交接文档记过（坑 14 / 坑 17），我又踩了一次。
+        const qm = String(location.pathname || '').match(/\\/questions\\/(\\d+)/);
+        if (qm && qm[1]) {
+          const qel = document.getElementById('content-' + qm[1]);
+          if (qel) {
+            const qt = T(qel);
+            if (qt.length >= 20) {
+              return { el: qel, score: 1000, len: qt.length, linkDensity: 0, pDensity: 1,
+                       via: 'csdn-ask:id' };
+            }
+          }
+        }
+        // 兜底：问题区里第一个块（问题本身总在最前，后面才是回答）
+        const items = askBox.querySelectorAll('.answer-content-item');
+        if (items.length) {
+          const ft = T(items[0]);
+          if (ft.length >= 20) {
+            return { el: items[0], score: 900, len: ft.length, linkDensity: 0, pDensity: 1,
+                     via: 'csdn-ask:first-block' };
+          }
+        }
+      }
 
       for (const sel of SITE_SELECTORS) {
         const el = document.querySelector(sel);
@@ -689,7 +753,14 @@ async function main() {
       let data = null;
       for (let i = 0; i < 3; i++) {
         try {
-          data = await evaluate(ctx.cdp, sessionId, collectScript());
+          // 调试：设 DSH_DL_DUMP_SCRIPT=1 把待求值脚本落盘，排查语法错误用
+          const scriptText = collectScript();
+          if (process.env.DSH_DL_DUMP_SCRIPT === '1' && i === 0) {
+            const fn = path.join(os.tmpdir(), 'ds_dump_script.js');
+            fs.writeFileSync(fn, scriptText, 'utf8');
+            warn('  脚本已落盘: ' + fn + '  (' + scriptText.length + ' 字符)');
+          }
+          data = await evaluate(ctx.cdp, sessionId, scriptText);
           if (data && (data.textLen > 50 || data.images.length)) break;
         } catch (e) {
           warn(`  采集失败(${i + 1}/3): ${e.message}`);

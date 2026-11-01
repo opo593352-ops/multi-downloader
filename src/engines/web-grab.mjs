@@ -135,13 +135,26 @@ async function launchChrome({ headful = false, chromePath, port = 9663, profileD
     '--no-default-browser-check',
     '--disable-background-networking',
     '--mute-audio',
+    // ── 反检测三件套 ──
+    // CSDN 会用 navigator.webdriver / headless UA / 窗口尺寸 判断机器人，
+    // 命中就返回「请进行安全验证(Security Verification)」页。
+    // 只加 --disable-blink-features 不够，实测仍然被拦。
     '--disable-blink-features=AutomationControlled',
     '--exclude-switches=enable-automation',
+    // 去掉「Chrome 正受到自动测试软件的控制」提示条，同时也少一个特征
+    '--disable-infobars',
+    // headless 的 navigator.userAgent 里不带 HeadlessChrome，但
+    // navigator.userAgentData 仍有差异；下面的 Runtime 注入会一起补
     '--lang=zh-CN',
     `--user-agent=${UA}`,
     'about:blank',
   ];
-  if (!headful) args.unshift('--headless=new');
+  if (!headful) {
+    // new headless 的 UA 已经是正常 Chrome，但窗口尺寸默认 800x600——
+    // 真实用户很少是这个尺寸，CSDN 会拿它做一项判断。
+    args.unshift('--window-size=1920,1080');
+    args.unshift('--headless=new');
+  }
 
   // ── 代理支持 ──
   // Chrome 不读 HTTP_PROXY 环境变量，必须显式给 --proxy-server。
@@ -288,6 +301,31 @@ function collectScript() {
      */
     const pickContent = () => {
       const scored = [];
+
+      // ═══ 站点白名单：已知结构明确，优先精确命中 ═══
+      //
+      // 走启发式打分会漏东西（链接密度、段落密度都不适用代码密集的技术站），
+      // 已知容器直接取，又快又准。
+      //
+      // CSDN:   #content_views   正文（#article_content 是外层包裹）
+      //         ⚠ CSDN 有「展开全文」按钮，未点开时部分内容在 .hide-article-box
+      //           里被截断，所以先移除该遮罩再取。
+      const SITE_SELECTORS = [
+        '#content_views',              // CSDN / 部分博客
+        '[itemprop="articleBody"]',    // 通用语义标记
+        '.article-content',            // 掘金 / 简书
+        '#js_content',                 // 微信公众号
+        'article',
+      ];
+
+      for (const sel of SITE_SELECTORS) {
+        const el = document.querySelector(sel);
+        if (!el) continue;
+        const txt = T(el);
+        if (txt.length < 150) continue;
+        // 返回结构与启发式一致（el/score/len/linkDensity/pDensity）
+        return { el, score: 999, len: txt.length, linkDensity: 0, pDensity: 1, via: 'selector:' + sel };
+      }
 
       const cands = document.querySelectorAll(
         'article, main, div, section, td, [role="main"], [itemprop="articleBody"]'
@@ -614,9 +652,29 @@ async function main() {
       await ctx.cdp.send('Network.enable', {}, sessionId);
       await ctx.cdp.send('Page.addScriptToEvaluateOnNewDocument', {
         source: `
+          // ── 反自动化检测 ──
+          // CSDN 这类站点会读这些特征判断是不是机器人：
+          //   navigator.webdriver      → true 就拦
+          //   navigator.plugins.length → headless 里是 0
+          //   navigator.languages      → 空数组也露馅
+          //   window.chrome            → headless 里可能缺失
+          // 全部补齐成正常浏览器该有的样子。
           Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-          Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN','zh','en'] });
+          Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+          Object.defineProperty(navigator, 'plugins', {
+            get: () => [1, 2, 3, 4, 5].map(() => ({ length: 1 })),
+          });
+          Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+          Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
           window.chrome = window.chrome || { runtime: {} };
+          // permissions.query 在 headless 下对 notifications 返回值不同
+          const origQuery = window.navigator.permissions?.query?.bind(window.navigator.permissions);
+          if (origQuery) {
+            window.navigator.permissions.query = (p) =>
+              p && p.name === 'notifications'
+                ? Promise.resolve({ state: Notification.permission })
+                : origQuery(p);
+          }
         `,
       }, sessionId);
 

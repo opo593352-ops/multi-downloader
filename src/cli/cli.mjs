@@ -23,7 +23,7 @@
 // 以前是拿 sed/python 去替换源码里的 '1.0.1'，打完再改回来；中途失败就会
 // 留下错误的版本号，而且看不出来（和 BUILD_INTERNAL 是同一类事故）。
 // 现在默认值只是"直接 node 跑时看到什么"，产物版本由构建脚本决定。
-const VERSION = typeof __VER__ !== 'undefined' ? __VER__ : '1.2.0';
+const VERSION = typeof __VER__ !== 'undefined' ? __VER__ : '1.3.0';
 
 // 静态 import：esbuild 才能把三个模块真正打进同一个 bundle。
 // 用动态 import(变量) 会被保留成运行时求值，单 EXE 里没有外部文件，必然报

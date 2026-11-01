@@ -2,12 +2,33 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-lightgrey.svg)](#)
-[![Version](https://img.shields.io/badge/version-v1.2.0-brightgreen.svg)](../../releases)
+[![Version](https://img.shields.io/badge/version-v1.3.0-brightgreen.svg)](../../releases)
 [![Free](https://img.shields.io/badge/price-free-%23e91e63.svg)](#支持作者)
 
-一个纯离线的 Windows 下载工具。九个功能，一个 exe，不需要装 Python、不需要装 Node、不需要登录。
+一个纯离线的 Windows 下载工具。十一个功能，一个 exe，不需要装 Python、不需要装 Node、不需要登录。
 
 > **完全免费开源，没有任何功能限制。** 如果它帮到了你，可以[请作者喝杯咖啡](#支持作者)，不打赏也完全不影响使用。
+
+---
+
+## ⚠️ 重要告示：网盘功能尚未完整测试
+
+> ### 📢 关于网盘功能（`pan` 命令）
+>
+> **v1.3.0 新增的网盘直链解析，目前只有「蓝奏云」经过完整实测。**
+>
+> | 网盘 | 状态 | 说明 |
+> |---|---|---|
+> | **蓝奏云** | ✅ **完整可用** | 实测下载 7.72 MB APK，三层反爬全部打通 |
+> | 天翼云盘 | ⚠️ 接口就绪 | 分享信息可读，需访问码才能进目录，**未完整测试** |
+> | 夸克网盘 | ⚠️ 部分可用 | 未登录可列出全部文件（实测 20142 项），**下载需登录，未完整测试** |
+> | 123 云盘 | ⚠️ 仅识别 | 链接能识别，**解析未实现** |
+> | 移动云盘 / UC / 阿里 / 迅雷 / 百度 | ❌ **未实现** | 只做了链接识别，解析会返回 `not-implemented` |
+>
+> **请勿把网盘功能当成稳定功能使用。** 九家里只有一家是真正跑通的，
+> 其余要么等后续版本，要么需要你提供真实分享链接配合调试。
+>
+> 如果你只是想下载视频/音乐/文章，**其他九个功能都是成熟稳定的**，不受此影响。
 
 ---
 
@@ -16,15 +37,16 @@
 | 功能 | 命令 | 说明 |
 |---|---|---|
 | 抖音 | `video` | 视频 / 图文，最高 4K |
-| 音乐 | `music` | 酷我 / QQ / 网易云 / **酷狗** 四平台横评，货比三家 |
+| 音乐 | `music` | 酷我 / QQ / 网易云 / **酷狗** 四平台横评，+ **VIP 兜底源** |
 | 站点视频 | `sites` | B站 / 优酷 / 腾讯 / 芒果，支持**合集整季** |
-| 网页抓取 | `grab` | 正文 / 图片 / 链接 |
+| 网页抓取 | `grab` | 正文 / 图片 / 链接，**已适配 CSDN** |
 | 知乎 | `zhihu` | 文章 → Markdown / TXT / Word，支持**专栏批量** |
 | 公众号 | `wechat` | 纯 HTTP 抓取，图片无防盗链 |
 | 歌单 | `playlist` | 网易云歌单批量，**断点续传** |
-| 小说 | `novel` | 笔趣阁系 |
+| 小说 | `novel` | 笔趣阁系 / 17k / bqg70 / xbiquge |
 | 免版权素材 | `stock` | Coverr / Pixabay / Pexels，**可商用** B-roll |
 | 快手 | `kuaishou` | 视频 / 图集（需登录态） |
+| 网盘 | `pan` | ⚠️ **仅蓝奏云可用**，详见上方告示 |
 
 ---
 
